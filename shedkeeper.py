@@ -3,7 +3,7 @@
   python shedkeeper.py trash PATH [PATH ...] --reason "why"   move to the trash of the volume (nothing is deleted)
   python shedkeeper.py find TEXT [--days N] [--volume X:]    search the trash and the copies by a part of the path
   python shedkeeper.py restore ID [--to PATH] [--volume X:]  bring an item or an old version back
-  python shedkeeper.py status                                where the store is, what is in it, are the hooks in
+  python shedkeeper.py status                                where the store is, what is in it, are the hooks in (and by which door)
   python shedkeeper.py adopt X:                              accept an existing folder as the store (a person's decision)
   python shedkeeper.py selftest                              run the tests of the kit
 
@@ -14,7 +14,11 @@ Exit codes. trash / restore: 0 done and recorded; 1 refused (the item is where i
 paths: at least one was refused -- the output says which, and a last `summary:` line counts them); 3 done
 but NOT recorded in the index and nothing was refused (the record is printed -- do not repeat the
 command); 2 wrong usage.
-find: 0 all indexes were read; 2 some index or line could not be read (said on stderr).
+find: 0 all indexes were read and every place that may hold copies of this user was searched; 2 some index or
+line could not be read, or some place was NOT searched (the folder is named on stderr as `NOT SEARCHED: path -- why`:
+"nothing found" is then not an answer about that place).
+restore: 2 the id was not found AND some place was not searched (named in the output); a restore that was done
+says in the same line what was not searched, and exits 0.
 """
 import argparse
 import io
@@ -64,19 +68,24 @@ def cmd_find(a, settings):
     for h in hits:
         state = "restored" if h["restored"] else ("in place" if h["present"] else "GONE from the store")
         label = "trash  " if h["kind"] == "trash" else "version"
-        print("%-18s %s  %s  %s  ->  %s  [%s]%s" % (h["id"], h["time"], label, h["src"], h["where"], state,
-                                                     ("  (%s)" % h["reason"]) if h["reason"] else ""))
+        print("%-18s %s  %s  %s  ->  %s  [%s]%s%s%s" % (
+            h["id"], h["time"], label, h["src"], h["where"], state,
+            ("  (%s)" % h["reason"]) if h["reason"] else "",
+            ("  via %s" % h["via"]) if h["via"] else "",
+            ("  session %s" % h["session"]) if h["session"] else ""))
+    blind = [p for p in problems if p.startswith("NOT SEARCHED")]
     if not hits:
-        print("nothing found for %r" % a.text)
+        print("nothing found for %r%s" % (a.text, " -- in what was searched; NOT everything was (see NOT SEARCHED "
+                                                  "below)" if blind else ""))
     for p in problems:
-        print("NOT READ: " + p, file=sys.stderr)
+        print(p if p.startswith("NOT SEARCHED") else "NOT READ: " + p, file=sys.stderr)
     return 2 if problems else 0
 
 
 def cmd_restore(a, settings):
     status, msg = store.restore(a.id, settings, to=a.to, session=_session(), volume=a.volume)
     print(msg)
-    return {"ok": 0, "refused": 1, "unindexed": 3}[status]
+    return {"ok": 0, "refused": 1, "unindexed": 3, "blind": 2}[status]
 
 
 def cmd_status(a, settings):
@@ -84,19 +93,40 @@ def cmd_status(a, settings):
     print("product: %s; settings: %s (%s)" % (config.PRODUCT, src, "found" if os.path.exists(src) else "not found, defaults"))
     for key in sorted(settings):
         print("  %s = %s" % (key, settings[key]))
+    ident = store.identity()
+    if not ident["sid"]:
+        print("user: %s -- the SID cannot be found (%s): no personal folder can be made or recognised" % (
+            ident["login"] or "?", ident["why"]))
     roots = store.all_roots(settings)
     if not roots:
-        print("no store found yet (it is created on first use on a fixed volume)")
+        print("no store of %s found yet (it is created on first use on a fixed volume)" % (ident["login"] or "this user"))
     for r in roots:
         s = store.summary(r)
-        print("store %s: label %s; trash: %s; versions: %s; transcripts: %d file(s)" % (
-            s["root"], s["label"], s["trash"], s["versions"], s["transcripts"]))
+        print(store.describe(r, settings))
+        print("  trash: %s; versions: %s; transcripts: %d file(s)" % (s["trash"], s["versions"], s["transcripts"]))
+    if ident["login"] and ident["sid"]:
+        for v in store._volume_dirs(settings):
+            try:
+                print("shared folder %s: %s" % (v, store.volume_state(v)[1]))
+                for path, why in store.resolve_personal(v, ident["login"], settings)[2]:
+                    print("skipped (not this user's store): %s -- %s" % (path, why))
+            except OSError as e:
+                print("could not read %s: %s" % (v, e))
+    for line in store.unsearched_lines(settings):
+        print(line + "  (find and restore do not look there)")
+    for path in store.leftovers(settings):
+        print("leftover of a creation (a lost race or a rejected folder; the tool never deletes it, it holds no copies -- "
+              "yours to remove after a look): %s" % path)
     try:
         import install
-        f = install.installed_hooks(os.getcwd())
-        print("hooks in settings for %s: pre_tool %s, session %s%s" % (
-            os.getcwd(), "yes" if f["pre_tool"] else "NO", "yes" if f["session"] else "NO",
-            ("; found in " + ", ".join(f["where"])) if f["where"] else ""))
+        project = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+        state = install.door_state(project)
+        print("\n".join(install.door_lines(state)))      # which door the hooks came by: the plugin, install.py, both, none
+        if state["mode"] != "plugin":
+            f = install.installed_hooks(os.getcwd())
+            print("hooks in settings for %s: pre_tool %s, session %s%s" % (
+                os.getcwd(), "yes" if f["pre_tool"] else "NO", "yes" if f["session"] else "NO",
+                ("; found in " + ", ".join(f["where"])) if f["where"] else ""))
     except Exception as e:
         print("could not read the settings: %s" % e)
     print("python: %s" % sys.version.split()[0])

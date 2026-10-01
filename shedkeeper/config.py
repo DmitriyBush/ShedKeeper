@@ -17,6 +17,7 @@ FALSE_WORDS = ("false", "0", "no", "off")
 DEFAULTS = {
     "store_dir_name": DEFAULT_STORE_DIR,
     "auto_create_store": True,
+    "private_store": True,
     "max_copy_mb": 512,
     "on_too_large": "deny",
     "cmd_max_files": 200,
@@ -71,6 +72,14 @@ def load(path=None):
                 settings[key] = False
                 problems.append("%s: auto_create_store = %r not understood -> false (safe)"
                                 % (where, value))
+            else:
+                settings[key] = b
+        elif key == "private_store":
+            b = _parse_bool(value)
+            if b is None:
+                settings[key] = True
+                problems.append("%s: private_store = %r not understood -> true (safe: the personal folder is "
+                                "closed to other users)" % (where, value))
             else:
                 settings[key] = b
         elif key == "on_too_large":

@@ -1,0 +1,17 @@
+{
+  "name": "shedkeeper",
+  "version": "0.2.0",
+  "description": "A safety net for work done by an AI coding agent on your files: a verified copy before every change, the trash instead of deletion, a way back by your word.",
+  "author": {
+    "name": "Serpentis-Git"
+  },
+  "repository": "https://github.com/Serpentis-Git/ShedKeeper",
+  "license": "Apache-2.0",
+  "keywords": [
+    "safety",
+    "backup",
+    "trash",
+    "hooks",
+    "windows"
+  ]
+}

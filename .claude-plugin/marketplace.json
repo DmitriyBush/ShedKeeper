@@ -1,0 +1,16 @@
+{
+  "name": "shedkeeper",
+  "owner": {
+    "name": "Serpentis-Git"
+  },
+  "metadata": {
+    "description": "ShedKeeper: a copy before every change, the trash instead of deletion"
+  },
+  "plugins": [
+    {
+      "name": "shedkeeper",
+      "source": "./",
+      "description": "A safety net for work done by an AI coding agent on your files: a verified copy before every change, the trash instead of deletion, a way back by your word."
+    }
+  ]
+}

@@ -7,7 +7,9 @@ Output follows the Claude Code hook contract: exit 0 always; a refusal is a JSON
                           "permissionDecisionReason": "<text>"}}
 and an informational line is {"hookSpecificOutput": {"hookEventName": "PreToolUse",
 "additionalContext": "<text>"}}. (Form taken from a hook already in production use; compare with the
-documentation of PreToolUse decision control when you change it.)
+documentation of PreToolUse decision control when you change it.) When the personal store was made in THIS
+call, the same JSON (a refusal too) carries a top-level "systemMessage": one paragraph for the person (where,
+closed to whom, why the number, how to switch off); with no decision to give it is the only key.
 
 What it does
   Edit / Write / NotebookEdit / MultiEdit
@@ -23,6 +25,8 @@ What it does
                                 cmd_max_files, cmd_deadline_s -> refused, not skipped. A target inside a
                                 store, or a target list that could not be named in full (a mask cut at the
                                 ceiling, a recursive copy from an unreadable source) -> refused.
+  Two doors: started with `--via-plugin` (the plugin's hooks.json) it does nothing while a live entry of install.py
+  covers PreToolUse (install.plugin_yields); started without the argument (install.py's entries) it always works.
   An exception inside the hook is a refusal when the tool is Edit/Write/NotebookEdit/MultiEdit, when a
   deletion/write was already recognized, or when the command text carries a rough sign of destruction
   (ROUGH: a deleting word, `>`, sed -i, cp, mv, Set-Content, git checkout ...); otherwise the action
@@ -178,7 +182,7 @@ def _decide_edit(tool, tool_input, cwd, session, settings, store, state):
     if not store.isfile(ap):
         return "allow", "", {"targets": 0}
     root = _project_root(cwd, ap, settings, store)
-    ok, note = store.ensure_store(root, settings)
+    ok, note, state["created"] = store.ensure_store_report(root, settings)
     if not ok:
         return "deny", ("shedkeeper: the store is not usable, so no copy can be made before this change: "
                         "%s. The change is refused. (To remove the hook: python install.py uninstall.)"
@@ -204,7 +208,6 @@ def _decide_cmd(tool, tool_input, cwd, session, settings, store, recognize, stat
         return "allow", "", {"targets": 0}
     shell = "powershell" if tool == "PowerShell" else "bash"
     cwd = cwd if isinstance(cwd, str) and cwd else os.getcwd()
-    root = store.store_root(cwd, settings)
     # --- deletion: refuse, with the ready trash command
     dele = recognize.delete_targets(command, cwd, shell)
     if dele.found:
@@ -248,11 +251,12 @@ def _decide_cmd(tool, tool_input, cwd, session, settings, store, recognize, stat
         todo.append(ap)
     if not todo:
         return "allow", "", {"targets": 0}
+    root = store.store_root(cwd, settings)          # only now: a command with nothing to copy never needs the store
     if len(todo) > settings["cmd_max_files"]:
         return "deny", ("shedkeeper: this command overwrites %d files; the ceiling is cmd_max_files = %d. "
                         "Refused, not skipped. Split the command, or raise the ceiling in shedkeeper.ini."
                         % (len(todo), settings["cmd_max_files"])), {"targets": len(todo), "root": root}
-    ok, note = store.ensure_store(root, settings)
+    ok, note, state["created"] = store.ensure_store_report(root, settings)
     if not ok:
         return "deny", ("shedkeeper: the store is not usable, so no copy can be made before this command: "
                         "%s. The command is refused." % note), {"targets": len(todo), "root": root}
@@ -301,14 +305,20 @@ def decide(data, state=None):
     return _decide_cmd(tool, tool_input, cwd, session, settings, store, recognize, state)
 
 
-def _emit(decision, text):
+def _emit(decision, text, message=""):
+    """One JSON object on one line. `message` (the report of a store made just now) goes to the person as the
+    top-level `systemMessage`, beside the decision when there is one -- a refusal carries it too."""
     if decision == "deny":
         out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                       "permissionDecisionReason": text}}
     elif decision == "context" and text:
         out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}
+    elif message:
+        out = {}
     else:
         return
+    if message:
+        out["systemMessage"] = message
     sys.stdout.write(json.dumps(out, ensure_ascii=True))
     sys.stdout.flush()
 
@@ -317,6 +327,21 @@ def _read_input():
     """The raw bytes of stdin. (A test may hand a text stream without .buffer.)"""
     buf = getattr(sys.stdin, "buffer", None)
     return buf.read() if buf is not None else sys.stdin.read().encode("utf-8")
+
+
+def _yields_to_install(data):
+    """Two doors, one handling: started by the PLUGIN (`--via-plugin`) while a live entry of install.py covers PreToolUse
+    in the settings of this session, this copy stays silent -- the other one does the work. The proof is install.plugin_yields:
+    CLAUDE_PROJECT_DIR given, the entry live, disableAllHooks on nowhere. Any doubt (the check fails, nothing is found,
+    no variable) -> False: a doubled hook is untidy, a silent pair is no protection."""
+    if "--via-plugin" not in sys.argv[1:]:
+        return False
+    try:
+        import install
+        cwd = data.get("cwd") if isinstance(data.get("cwd"), str) else None
+        return bool(install.plugin_yields("PreToolUse", cwd))
+    except Exception:
+        return False
 
 
 def main():
@@ -329,6 +354,8 @@ def main():
                           "so nothing can be copied first. Refused." % (e.__class__.__name__, e))
         return 0
     if not isinstance(data, dict):
+        return 0
+    if _yields_to_install(data):
         return 0
     tool = data.get("tool_name")
     t0 = time.monotonic()
@@ -349,16 +376,29 @@ def main():
         from shedkeeper import config, store
         settings, _p = config.load()
         cwd = data.get("cwd") if isinstance(data.get("cwd"), str) else ""
-        root = meta.get("root") or store.store_root(cwd, settings)
         rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "tool": tool, "decision": decision,
                "targets": meta.get("targets", 0), "ms": int((time.monotonic() - t0) * 1000)}
         if meta.get("error"):
             rec["error"] = meta["error"]
         if decision != "allow" or meta.get("targets"):
+            root = meta.get("root") or store.store_root(cwd, settings)
             store.log(root, rec)
     except Exception:
         pass                    # a failing log never changes the decision
-    _emit(decision, text)
+    message = ""
+    try:
+        from shedkeeper import store
+        message = store.creation_report(state.get("created"))
+    except Exception as e:      # a failing report never changes the decision -- but it leaves a trace in the log
+        try:
+            from shedkeeper import config, store
+            settings, _p = config.load()
+            cwd = data.get("cwd") if isinstance(data.get("cwd"), str) else ""
+            store.log(store.store_root(cwd, settings), {"time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                                        "event": "report_error", "error": "%s: %s" % (e.__class__.__name__, e)})
+        except Exception:
+            pass
+    _emit(decision, text, message)
     return 0
 
 

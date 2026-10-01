@@ -1,0 +1,39 @@
+{
+  "description": "ShedKeeper: a copy before every change, the trash instead of deletion",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool.py\" ]; then python \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool.py\" --via-plugin; rc=$?; if [ $rc -eq 126 ] || [ $rc -eq 127 ]; then printf '%s' '{\"systemMessage\": \"ShedKeeper cannot run: Python was not found (or `python` is the Microsoft Store placeholder) -- its protection is OFF: no copy is saved before an edit, nothing goes to the trash. Install Python (python.org, tick Add python.exe to PATH) and restart Claude Code.\", \"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"additionalContext\": \"ShedKeeper cannot run: Python was not found (or `python` is the Microsoft Store placeholder) -- the protection is OFF -- tell the person before changing or deleting files.\"}}'; exit 0; fi; exit $rc; else printf '%s' '{\"systemMessage\": \"ShedKeeper plugin files were not found: its protection is OFF (no copy is saved before an edit, nothing goes to the trash). Reinstall it with /plugin install shedkeeper@shedkeeper, or remove it with /plugin uninstall shedkeeper@shedkeeper.\", \"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"additionalContext\": \"ShedKeeper plugin files were not found: the protection is OFF -- tell the person. Do not edit the plugin cache by hand. The person reinstalls with /plugin install shedkeeper@shedkeeper or removes it with /plugin uninstall shedkeeper@shedkeeper (python <kit folder>/install.py install is the other way in).\"}}'; fi",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\" ]; then python \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\" --via-plugin; rc=$?; if [ $rc -eq 126 ] || [ $rc -eq 127 ]; then printf '%s' '{\"systemMessage\": \"ShedKeeper cannot run: Python was not found (or `python` is the Microsoft Store placeholder) -- its protection is OFF: no copy is saved before an edit, nothing goes to the trash. Install Python (python.org, tick Add python.exe to PATH) and restart Claude Code.\", \"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"ShedKeeper cannot run: Python was not found (or `python` is the Microsoft Store placeholder) -- the protection is OFF -- tell the person before changing or deleting files.\"}}'; exit 0; fi; exit $rc; else printf '%s' '{\"systemMessage\": \"ShedKeeper plugin files were not found: its protection is OFF (no copy is saved before an edit, nothing goes to the trash). Reinstall it with /plugin install shedkeeper@shedkeeper, or remove it with /plugin uninstall shedkeeper@shedkeeper.\", \"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"ShedKeeper plugin files were not found: the protection is OFF -- tell the person. Do not edit the plugin cache by hand. The person reinstalls with /plugin install shedkeeper@shedkeeper or removes it with /plugin uninstall shedkeeper@shedkeeper (python <kit folder>/install.py install is the other way in).\"}}'; fi",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\" ]; then python \"${CLAUDE_PLUGIN_ROOT}/hooks/session.py\" --via-plugin; rc=$?; if [ $rc -eq 126 ] || [ $rc -eq 127 ]; then printf '%s' '{\"systemMessage\": \"ShedKeeper cannot run: Python was not found (or `python` is the Microsoft Store placeholder) -- its protection is OFF: no copy is saved before an edit, nothing goes to the trash. Install Python (python.org, tick Add python.exe to PATH) and restart Claude Code.\"}'; exit 0; fi; exit $rc; else printf '%s' '{\"systemMessage\": \"ShedKeeper plugin files were not found: its protection is OFF (no copy is saved before an edit, nothing goes to the trash). Reinstall it with /plugin install shedkeeper@shedkeeper, or remove it with /plugin uninstall shedkeeper@shedkeeper.\"}'; fi",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
