@@ -179,3 +179,7 @@ non-programmer and an AI coding agent built software together, starting in sprin
 edit or cleanup cost work, a small guard was added so that the same kind of loss would not repeat. For
 several months they lived inside one private working repository. In September 2026 they were separated
 from it, rewritten without any links to that setup, and packaged as this kit.
+
+## License
+
+Apache License 2.0 -- see [LICENSE](LICENSE).
