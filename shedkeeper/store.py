@@ -276,6 +276,74 @@ def _read_jsonl(path):
     return out, bad
 
 
+def _damaged_jsonl(path):
+    """[(line number, text)] of the lines of a journal that are no JSON object ([] when the file is not there). Raises OSError when it cannot be read."""
+    out = []
+    try:
+        with open(_lp(path), encoding="utf-8", errors="replace") as fh:
+            for n, line in enumerate(fh, 1):
+                if not line.strip():
+                    continue
+                try:
+                    if isinstance(json.loads(line), dict):
+                        continue
+                except ValueError:
+                    pass
+                out.append((n, line.rstrip("\r\n")))
+    except FileNotFoundError:
+        return []
+    return out
+
+
+def quarantine_jsonl(path, damaged, extra=None):
+    """The way out of a damaged journal: the damaged lines (`damaged`, from _damaged_jsonl) go to `<path>.bad` (nothing is deleted), the file is written again
+    without them, and `extra(records)` -> [dict] (it sees the whole records that are left) is appended. The index lock is held. -> the number of lines appended.
+    The new text is first written WHOLE to `<path>.new` (and fsynced), only then is the journal itself rewritten, and `.new` goes when that is done: a crash while the
+    journal is being rewritten leaves the complete new text beside it, not a cut-off file and nothing else. (A rename over the journal, `os.replace`, cannot be used
+    here: Windows refuses it while this process holds the journal open (measured on Windows 11, Python 3.12: PermissionError, WinError 5; the test
+    `t_o6_replace_over_open_journal` repeats it) -- and without the lock a line another process appends
+    in between would be lost.)"""
+    with open(_lp(path), "r+b") as fh:
+        _lock(fh.fileno(), path)
+        try:
+            fh.seek(0)
+            raw = fh.read().decode("utf-8", "replace")
+            gone = {n for n, _t in damaged}
+            kept, recs = [], []
+            for n, line in enumerate(raw.splitlines(), 1):
+                if n in gone:
+                    continue
+                kept.append(line)
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict):
+                    recs.append(rec)
+            more = list(extra(recs)) if extra else []
+            kept += [json.dumps(r) for r in more]
+            with open(_lp(path + ".bad"), "ab") as bad:
+                for _n, text in damaged:
+                    bad.write((text + "\n").encode("utf-8"))
+                bad.flush()
+                os.fsync(bad.fileno())
+            new_text = ("\n".join(kept) + ("\n" if kept else "")).encode("utf-8")
+            new_path = _lp(path + ".new")
+            with open(new_path, "wb") as nf:        # (a `.new` left by an earlier crash is overwritten: it holds the text of THAT rewrite, now outdated)
+                nf.write(new_text)
+                nf.flush()
+                os.fsync(nf.fileno())
+            fh.seek(0)
+            fh.truncate()
+            fh.write(new_text)
+            fh.flush()
+            os.fsync(fh.fileno())
+            _drop_own_temp(new_path)
+        finally:
+            _unlock(fh.fileno())
+    return len(more)
+
+
 def _is_mine(root):
     """Is `root` a personal folder of ours that belongs to THIS account (label ours with my SID, owner is me)?"""
     return judge_personal(root)[0]
@@ -485,8 +553,20 @@ def store_root(path, settings):
     return free or os.path.join(vol, personal_names(login)[-1])
 
 
+# letters that are not asked about: a drive of a type that holds no store of ours (a store is made on a FIXED drive only) or that has nothing in it.
+# `isdir` on a disconnected network drive or an empty card reader can take seconds, and a hook has a time to keep (what is asked of the system
+# is the type of the drive, which answers at once and does not touch the network).
+DRIVE_NOT_ASKED = (0, 1, 4, 5)          # unknown, no root folder (no medium / not there), network, optical
+DRIVE_NO_MEDIUM = (0, 1, 5)
+
+
+def _letter_skipped(c, types):
+    return _drive_type("%s:%s" % (c, os.sep)) in types
+
+
 def _volume_dirs(settings):
-    """The existing volume folders of ours: the environment root, or <X>:\\<name> for every letter."""
+    """The existing volume folders of ours: the environment root, or <X>:\\<name> for every letter (a network drive, an optical drive and a letter with no
+    medium are not asked about: see DRIVE_NOT_ASKED)."""
     er = env_root()
     if er:
         try:
@@ -495,6 +575,8 @@ def _volume_dirs(settings):
             return []
     out = []
     for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        if _letter_skipped(c, DRIVE_NOT_ASKED):
+            continue
         r = "%s:%s%s" % (c, os.sep, settings["store_dir_name"])
         try:
             if os.path.isdir(r) and label_state(r)[0] == "ours":
@@ -524,7 +606,7 @@ def _volume_candidates(settings):
     """Every EXISTING shared folder that might hold a store of ours, whatever its label says: the environment
     root, or <X>:\\<name> for every letter. Raises nothing: a folder that cannot be asked is returned too."""
     er = env_root()
-    cands = [er] if er else ["%s:%s%s" % (c, os.sep, settings["store_dir_name"]) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]
+    cands = [er] if er else ["%s:%s%s" % (c, os.sep, settings["store_dir_name"]) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if not _letter_skipped(c, DRIVE_NO_MEDIUM)]
     out = []
     for r in cands:
         try:
@@ -551,6 +633,9 @@ def unsearched(settings):
     out = []
     mine = {_norm(p) for p in all_roots(settings)}
     for v in _volume_candidates(settings):
+        if _drive_type(v) in DRIVE_NOT_ASKED:       # (a shared folder on a network drive: named, not opened -- `all_roots` does not look there)
+            out.append((v, "on a %s drive: not looked at (ShedKeeper makes its stores on fixed drives)" % DRIVE_TYPE_NAMES.get(_drive_type(v), "?")))
+            continue
         try:
             state, why = label_state(v)
             if state == "bad":
@@ -663,8 +748,8 @@ def user_label_state(root):
 # answers "access denied" (PermissionError, WinError 5) -- measured: 12 hooks at once on an empty volume, 7
 # refusals in 300 starts. That is a collision, not an unusable store, so the rename is tried again a few
 # times. Budget: at most PLACE_TRIES tries, PLACE_PAUSE_S * try number between them (0.05 + 0.10 + ... + 0.35
-# = 1.4 s at most over 7 pauses) -- far below the 60 s hook timeout (see cmd_deadline_s in shedkeeper.ini, which
-# leaves ~30 s of margin before the creation-lock wait of CREATE_LOCK_WAIT_S, ~27 s after it). Only PermissionError
+# = 1.4 s at most over 7 pauses) -- far below the 90 s hook timeout (see cmd_deadline_s in shedkeeper.ini, which
+# leaves ~32 s of margin before the creation-lock wait of CREATE_LOCK_WAIT_S, ~29 s after it). Only PermissionError
 # is retried (a permanent one costs the whole 1.4 s before it is refused -- a declared limit); any other error is
 # refused at once. After the last try the old refusal stands, with the reason.
 PLACE_TRIES = 8
@@ -1360,9 +1445,9 @@ def creation_report(rep):
 # else's). Retrying each read cannot close that; taking turns can. So the slow path -- anything that is not a ready
 # store -- runs under ONE named mutex per volume folder (in the logon session of the user: `Local\`). Measured on the authors' machine
 # (the staging findings, 12 hooks x 25 rounds): 12 refusals in 300 starts even with the retry of _place.
-# The wait is bounded: CREATE_LOCK_WAIT_S = 3 s, far below the 60 s hook timeout (cmd_deadline_s in shedkeeper.ini
-# already counts 20 s of copies + 10 s of git against it, which leaves about 30 s; the wait comes out of that margin,
-# so about 27 s are left, less 1.4 s of the _place retries -- and a real creation takes milliseconds, so 3 s is
+# The wait is bounded: CREATE_LOCK_WAIT_S = 3 s, far below the 90 s hook timeout (cmd_deadline_s in shedkeeper.ini
+# already counts 20 s of copies + 10 s of git + 25 s of database copies against it, which leaves about 32 s; the wait comes out of that margin,
+# so about 29 s are left, less 1.4 s of the _place retries -- and a real creation takes milliseconds, so 3 s is
 # many times what it needs). The wait is OUTSIDE the cmd_deadline_s and git budgets, which is why it is kept short:
 # a hook that times out lets the action through WITHOUT a copy (the forbidden side). A mutex that cannot be made or
 # taken in time is NOT a refusal by itself: the old way (without turns) is gone through, and the log says so; at
@@ -1637,7 +1722,7 @@ def trash(path, reason, settings, session="", now=None):
             where = os.path.join(root, "trash", "_index", "_orphans.jsonl")
         except Exception:
             rec = make(day)(0)
-        return "unindexed", (prefix + "MOVED BUT NOT RECORDED (%s: %s); DO NOT REPEAT -- the item is "
+        return "unindexed", (prefix + "MOVED BUT NOT RECORDED (%s: %s); the move is done, only its record is missing -- the item is "
                              "safe: %s; record -> %s; RECORD: %s"
                              % (e.__class__.__name__, e, dst, where, json.dumps(rec))), {"dst": dst}
 
@@ -1920,7 +2005,7 @@ def _restore(item_id, settings, to, session, volume, now):
             return "refused", "REFUSED the rename failed (%s: %s): %s" % (e.__class__.__name__, e, dst)
         okrec, where = _record_restore(idx, orphans, rec_make({"from": dst}))
         if not okrec:
-            return "unindexed", "RESTORED BUT NOT RECORDED (%s); DO NOT REPEAT -- the item is at %s" % (where, target)
+            return "unindexed", "RESTORED BUT NOT RECORDED (%s); the restore is done, only its record is missing -- the item is at %s" % (where, target)
         return "ok", "OK restored %s -> %s" % (dst, target)
 
     # a version

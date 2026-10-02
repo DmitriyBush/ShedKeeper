@@ -3,11 +3,31 @@
   python shedkeeper.py trash PATH [PATH ...] --reason "why"   move to the trash of the volume (nothing is deleted)
   python shedkeeper.py find TEXT [--days N] [--volume X:]    search the trash and the copies by a part of the path
   python shedkeeper.py restore ID [--to PATH] [--volume X:]  bring an item or an old version back
-  python shedkeeper.py status                                where the store is, what is in it, are the hooks in (and by which door)
+  python shedkeeper.py status                                where the store is, what is in it, are the hooks in (and by which door), the databases
+  python shedkeeper.py dbcopy ADDRESS|FILE [--mcp-server NAME]   a verified copy of a database NOW (PostgreSQL address or SQLite file)
+  python shedkeeper.py settings [--json]                     every setting: now, default, allowed, weight, what it does in plain words
+  python shedkeeper.py set KEY VALUE                         change one setting (checked, logged, shown to the person); ONLY after the person agrees
+  python shedkeeper.py survey [--json] [--project PATH] [--done]   getting to know the machine and the project: READ ONLY, passwords never shown
+  python shedkeeper.py prove ENGINE [--target PROBE]         the proof of an engine adapter: fill, copy, destroy, restore, compare -- on a PROBE only
+  python shedkeeper.py activate ENGINE                       the PERSON makes the proof of an adapter count (a code typed in their own message)
+  python shedkeeper.py quarantine                            move the DAMAGED lines of the journals (confirm.jsonl, proofs.jsonl) to .bad files; closes every code issued so far
   python shedkeeper.py adopt X:                              accept an existing folder as the store (a person's decision)
   python shedkeeper.py selftest                              run the tests of the kit
 
-ID is what `find` prints: t:<day>:<n> (trash), t:orphans:<n>, v:<day>:<n> (an earlier version).
+`activate`: an adapter of the user protects only after the PERSON confirmed its proof: `prove` prints a code, the person types `CONFIRM SK-nnnnnn`
+in their own message (the hook of the user's prompt receives it), `activate ENGINE` applies it (0 activated; 4 not applied, a code was issued; 1 refused). The code is for THESE bytes of the file.
+`prove`: 0 proved (a line `proved` for the sha256 of the adapter file is in the store); 1 refused (a probe that is not empty or not named
+shedkeeper_probe..., an adapter that does not load) or a step failed (nothing is deleted; the output says what was left behind).
+ID is what `find` prints: t:<day>:<n> (trash), t:orphans:<n>, v:<day>:<n> (an earlier version), d:<day>:<n> (a copy of a database).
+`restore d:...`: a PostgreSQL copy comes back into a NEW database `<name>_restored_<YYYYMMDD_HHMMSS>` (the old one is never touched;
+`--to` is not used); a SQLite copy comes back as a file (the file there goes to the trash first; `--to PATH` names another place).
+`dbcopy` has no time and size limit of the hook; the address may carry `***` for the password (pgpass / PGPASSWORD of your shell is used).
+Exit codes of dbcopy: 0 copy made and listed; 1 refused or nothing to copy; 3 copy made but NOT listed.
+`set`: 0 changed and in effect; 1 refused (a key that does not exist, a value that is not understood, a weakening that cannot be confirmed:
+nothing is written); 3 written but NOT in effect (another file read later overrides it); 4 NOT applied: the value would WEAKEN protection, and
+a weakening is applied only when the person types the code this command printed (`CONFIRM SK-nnnnnn`, in their own message) and the same
+command is run again (shedkeeper/confirm.py). Your own settings go to ~/.shedkeeper/shedkeeper.ini (survives an update of the kit); when
+SHEDKEEPER_INI names a file, that one file is read and written.
 There is NO command that empties the store: only a person cleans it.
 
 Exit codes. trash / restore: 0 done and recorded; 1 refused (the item is where it was; with several
@@ -30,7 +50,7 @@ KIT = os.path.dirname(os.path.abspath(__file__))
 if KIT not in sys.path:
     sys.path.insert(0, KIT)
 
-from shedkeeper import config, store  # noqa: E402
+from shedkeeper import config, confirm, db, dbcli, prove, settings_cli, store, survey  # noqa: E402
 
 
 def _utf8():
@@ -65,9 +85,15 @@ def cmd_trash(a, settings):
 
 def cmd_find(a, settings):
     hits, problems = store.find(a.text, settings, days=a.days, volume=a.volume)
+    try:
+        dhits, dproblems = dbcli.find_copies(a.text, settings, days=a.days, volume=a.volume)
+    except Exception as e:      # a fault in the databases part must not hide what the files part found
+        dhits, dproblems = [], ["the copies of databases could not be searched (%s: %s)" % (e.__class__.__name__, db.mask_secrets(str(e)))]
+    hits = sorted(hits + dhits, key=lambda h: h["time"])
+    problems = problems + dproblems
     for h in hits:
         state = "restored" if h["restored"] else ("in place" if h["present"] else "GONE from the store")
-        label = "trash  " if h["kind"] == "trash" else "version"
+        label = {"trash": "trash  ", "dbcopy": "db copy"}.get(h["kind"], "version")
         print("%-18s %s  %s  %s  ->  %s  [%s]%s%s%s" % (
             h["id"], h["time"], label, h["src"], h["where"], state,
             ("  (%s)" % h["reason"]) if h["reason"] else "",
@@ -82,17 +108,60 @@ def cmd_find(a, settings):
     return 2 if problems else 0
 
 
+def cmd_dbcopy(a, settings):
+    code, text = dbcli.dbcopy(a.target, a.mcp_server, os.getcwd(), settings, _session())
+    print(text)
+    return code
+
+
 def cmd_restore(a, settings):
-    status, msg = store.restore(a.id, settings, to=a.to, session=_session(), volume=a.volume)
+    if (a.id or "").strip().startswith("d:"):
+        status, msg = dbcli.restore_copy(a.id.strip(), settings, to=a.to, session=_session(), volume=a.volume)
+    else:
+        status, msg = store.restore(a.id, settings, to=a.to, session=_session(), volume=a.volume)
     print(msg)
     return {"ok": 0, "refused": 1, "unindexed": 3, "blind": 2}[status]
 
 
+def cmd_settings(a, settings):
+    print(settings_cli.settings_json(settings) if a.json else settings_cli.render_menu(settings))
+    return 0
+
+
+def cmd_set(a, settings):
+    code, text = settings_cli.set_setting(a.key, " ".join(a.value), settings, os.getcwd(), _session())
+    print(text)
+    return code
+
+
+def cmd_survey(a, settings):
+    code, text = survey.run(a.project or os.getcwd(), settings, as_json=a.json, done_only=a.done)
+    print(text)
+    return code
+
+
+def cmd_prove(a, settings):
+    code, text = prove.run(a.engine, a.target, os.getcwd(), settings, _session())
+    print(text)
+    return code
+
+
+def cmd_activate(a, settings):
+    code, text = prove.activate(a.engine, os.getcwd(), settings, _session())
+    print(text)
+    return code
+
+
 def cmd_status(a, settings):
-    src = os.environ.get("SHEDKEEPER_INI") or config.DEFAULT_INI
-    print("product: %s; settings: %s (%s)" % (config.PRODUCT, src, "found" if os.path.exists(src) else "not found, defaults"))
+    files = config.ini_files()
+    print("product: %s; settings read from: %s; `set` writes to: %s (`python shedkeeper.py settings` lists them)" % (
+        config.PRODUCT, ", ".join(files) if files else "no file found, defaults", config.target_ini()))
     for key in sorted(settings):
         print("  %s = %s" % (key, settings[key]))
+    for key, val, eff in getattr(settings, "unconfirmed", ()) or ():
+        print("NOT THROUGH `set`: %s = %s stands in a settings file and is IN EFFECT, but no record shows that `set` wrote it (the file was edited by hand). %s" % (key, val or "(empty)", eff))
+    for key, val, default, eff in settings_cli.weakened(settings):
+        print("PROTECTION WEAKENED: %s = %s (default %s) -- %s" % (key, val or "(empty)", default or "(empty)", eff))
     ident = store.identity()
     if not ident["sid"]:
         print("user: %s -- the SID cannot be found (%s): no personal folder can be made or recognised" % (
@@ -124,13 +193,24 @@ def cmd_status(a, settings):
         print("\n".join(install.door_lines(state)))      # which door the hooks came by: the plugin, install.py, both, none
         if state["mode"] != "plugin":
             f = install.installed_hooks(os.getcwd())
-            print("hooks in settings for %s: pre_tool %s, session %s%s" % (
-                os.getcwd(), "yes" if f["pre_tool"] else "NO", "yes" if f["session"] else "NO",
+            print("hooks in settings for %s: pre_tool %s, session %s, prompt %s%s" % (
+                os.getcwd(), "yes" if f["pre_tool"] else "NO", "yes" if f["session"] else "NO", "yes" if f["prompt"] else "NO",
                 ("; found in " + ", ".join(f["where"])) if f["where"] else ""))
     except Exception as e:
         print("could not read the settings: %s" % e)
+    try:
+        for line in dbcli.status_lines(settings, os.getcwd()):
+            print(line)
+    except Exception as e:
+        print("could not read the state of the databases part: %s: %s" % (e.__class__.__name__, db.mask_secrets(str(e))))
     print("python: %s" % sys.version.split()[0])
     return 0
+
+
+def cmd_quarantine(a, settings):
+    code, text = confirm.quarantine(settings, os.getcwd())
+    print(text)
+    return code
 
 
 def cmd_adopt(a, settings):
@@ -160,6 +240,24 @@ def main(argv=None):
     p.add_argument("--to")
     p.add_argument("--volume")
     sub.add_parser("status", help="show the state")
+    p = sub.add_parser("settings", help="every setting and what it does")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("set", help="change one setting")
+    p.add_argument("key")
+    p.add_argument("value", nargs="*", help="the new value (several words for a list: mcp_no_db slack linear)")
+    p = sub.add_parser("survey", help="a read-only look at the machine and the project")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--project")
+    p.add_argument("--done", action="store_true", help="only record that the survey was done for the project")
+    p = sub.add_parser("dbcopy", help="a verified copy of a database now")
+    p.add_argument("target", help="a PostgreSQL address (postgresql://user:***@host:port/db) or a SQLite file")
+    p.add_argument("--mcp-server", dest="mcp_server", default="", help="the name of the MCP server the database is behind")
+    p = sub.add_parser("prove", help="the proof of an engine adapter, on a probe database")
+    p.add_argument("engine", help="postgres, sqlite, or the id of an adapter in the adapters folder")
+    p.add_argument("--target", help="the probe: an EMPTY database (or file) whose name begins with shedkeeper_probe; a file engine may leave it out")
+    p = sub.add_parser("activate", help="the person makes the proof of an adapter count")
+    p.add_argument("engine", help="the id of an adapter in the adapters folder")
+    sub.add_parser("quarantine", help="move the damaged lines of the journals of the store to .bad files (nothing is deleted)")
     p = sub.add_parser("adopt", help="accept an existing folder as the store")
     p.add_argument("target")
     sub.add_parser("selftest", help="run the tests")
@@ -170,8 +268,9 @@ def main(argv=None):
     settings, problems = config.load()
     for pr in problems:
         print("note: " + pr)
-    return {"trash": cmd_trash, "find": cmd_find, "restore": cmd_restore, "status": cmd_status,
-            "adopt": cmd_adopt, "selftest": cmd_selftest}[a.cmd](a, settings)
+    return {"trash": cmd_trash, "find": cmd_find, "restore": cmd_restore, "status": cmd_status, "dbcopy": cmd_dbcopy,
+            "adopt": cmd_adopt, "selftest": cmd_selftest, "settings": cmd_settings, "set": cmd_set,
+            "survey": cmd_survey, "prove": cmd_prove, "activate": cmd_activate, "quarantine": cmd_quarantine}[a.cmd](a, settings)
 
 
 if __name__ == "__main__":

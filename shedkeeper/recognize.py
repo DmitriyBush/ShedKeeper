@@ -21,8 +21,11 @@ Forms (a literal path in the command text):
              --staged) / reset --hard / switch -f -> the list of rollback folders (with -C and cd)
 Taken into account: `cd`/`pushd`/`Set-Location` along the command (and in `( ... )`), `VAR=x` before
 the verb, a line continued with `\\` or a backtick, heredoc bodies (data, except python writes).
+The redirection of a segment that is itself a WRAPPER (`bash -c "..." > f`, `pwsh -Command "..." >> f`) is read like any other (`_outer_redirects`).
 NOT seen (declared): writes inside programs the command runs, paths from variables ($X, %X%),
-computed paths.
+computed paths -- except for the guard of files that must not be written at all, which asks `unreadable_writes`: the writes (`>`, `>>`, tee, sed -i, cp / mv,
+Add-Content ...) whose target is not a literal path; the hook refuses them when the target or the command points at the settings of the kit or the record of the
+conversation.
 
 --- delete_targets --------------------------------------------------------------------------
 The HEAD of an executed command is judged, not a word anywhere in the line: `grep rm file`,
@@ -47,10 +50,18 @@ MAX_GLOB = 200          # ceiling of a mask expansion per argument
 MAX_NEST_DEPTH = 3      # nested code (bash -c, $( ), cmd /c ...)
 MAX_PARSE_LEN = 50000   # above this the scanner is not run; the coarse judgement is used
 
+# a mode that REWRITES the file: w, x (also wb, w+ ...) and r+ (r+b, rb+, rt+): `open('f', 'w')`, `open('f', mode='w')`, `Path('f').open('w')`. A mode that APPENDS
+# (a, ab, a+ ...) overwrites nothing: it is read as `>>` (PY_APPEND, `append_targets`), not as a write that needs a copy first.
+_PY_MODE = r"""r?['\"](?:[wx][bt+]*|r[bt]*\+[bt+]*)['\"]"""
+_PY_MODE_APPEND = r"""r?['\"]a[bt+]*['\"]"""
+PY_APPEND = re.compile(
+    r"open\(\s*r?(['\"])(?P<b>[^'\"]+)\1\s*,\s*(?:mode\s*=\s*)?" + _PY_MODE_APPEND +
+    r"|Path\(\s*r?(['\"])(?P<d>[^'\"]+)\3\s*\)\s*\.open\(\s*(?:mode\s*=\s*)?" + _PY_MODE_APPEND)
 PY_WRITE = re.compile(
     r"Path\(\s*r?(['\"])(?P<a>[^'\"]+)\1\s*\)\s*\.write_(?:text|bytes)"
-    r"|open\(\s*r?(['\"])(?P<b>[^'\"]+)\3\s*,\s*r?['\"][wx]"
-    r"|shutil\.(?:copy|copy2|copyfile|move)\([^,()]+,\s*r?(['\"])(?P<c>[^'\"]+)\5")
+    r"|open\(\s*r?(['\"])(?P<b>[^'\"]+)\3\s*,\s*(?:mode\s*=\s*)?" + _PY_MODE +
+    r"|shutil\.(?:copy|copy2|copyfile|move)\([^,()]+,\s*r?(['\"])(?P<c>[^'\"]+)\5"
+    r"|Path\(\s*r?(['\"])(?P<d>[^'\"]+)\7\s*\)\s*\.open\(\s*(?:mode\s*=\s*)?" + _PY_MODE)
 # heredoc marker: `<<` or `<<-`, NOT `<<<` (here-string)
 HEREDOC = re.compile(r"(?<!<)<<(-?)(?!<)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
 PS_ALIASES = {'sc': 'set-content', 'copy': 'copy-item', 'cpi': 'copy-item', 'move': 'move-item',
@@ -202,6 +213,12 @@ def _redirect_targets(seg):
     return out
 
 
+def _outer_redirects(seg, append=False):
+    """The targets of the redirections that stand in the segment itself, outside quotes: `>` (and `>|`), or with append=True `>>`. A wrapper
+    (`bash -c "..." >> f`, `pwsh -Command "..." > f`) is a segment like any other: its own redirection is outside the string that is read inside."""
+    return _append_redirect_targets(seg) if append else _redirect_targets(seg)
+
+
 def _tokens(seg, ps=False):
     # a backslash before a letter/digit/dot/mask character is a Windows path separator, not an escape
     # (otherwise shlex eats it: C:\a\x.txt -> C:ax.txt, C:\new\* -> C:new*); in PowerShell a backslash
@@ -330,6 +347,13 @@ def _copy_targets(form, srcs, dest, cwd, isdir, recursive, max_files, notes):
     return out
 
 
+def _strip_to_head(toks):
+    """The words of a segment from the REAL command on: after assignments, keywords and wrappers WITH their flags and values (`timeout 5`, `nice -n 5`,
+    `sudo -u USER`, `xargs -n 1` ... the table of delete_targets: WRAPPERS, WRAPPER_VALUE_FLAGS). [] when there is no command."""
+    i = _peel(toks)          # (assignments, do/then/else/!, time/sudo/nohup/env/command/exec/xargs and the rest of WRAPPERS: all of PREFIXES is peeled there, with the flags)
+    return toks[i:] if i > 0 else (toks if i == 0 else [])
+
+
 def write_targets(cmd, cwd, shell='bash', isdir=os.path.isdir, max_files=MAX_GLOB, notes=None):
     """([(form, absolute path)], [git rollback folders]). `isdir` is replaceable in tests.
     `max_files` is the ceiling of one hook run: a mask (or a recursive copy) that names more than that
@@ -348,16 +372,18 @@ def write_targets(cmd, cwd, shell='bash', isdir=os.path.isdir, max_files=MAX_GLO
     for seg in _split_segments(head, ps):
         seg = seg.lstrip('({').rstrip(')}').strip() or seg
         toks = _tokens(seg, ps)
-        # prefixes with the real verb behind them: VAR=x, do/then/else, sudo, time, env ...
-        while toks and (re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', toks[0])
-                        or toks[0].lower() in PREFIXES):
-            toks = toks[1:]
+        # prefixes with the real verb behind them: VAR=x, do/then/else, sudo -u U, time, env, timeout 5, nice -n 5, xargs -n 1 ...
+        toks = _strip_to_head(toks)
         verb = os.path.basename(toks[0]).lower() if toks else ''     # /bin/cp -> cp
         if verb.endswith('.exe'):
             verb = verb[:-4]
         # wrappers: bash -c "...", bash -lc "...", pwsh -Command "...", cmd /c "..." -> the same analysis
         # inside the string
         low = [t.lower() for t in toks]
+        # the redirections of the segment ITSELF, also when the segment is a wrapper (`bash -c "..." > f`): they are outside the string
+        for t in _outer_redirects(seg):
+            if _is_literal(t):
+                res.append(('redirect', t, cwd))
         if verb in ('bash', 'sh', 'zsh', 'dash'):
             k = next((k for k in range(1, len(toks) - 1)
                       if toks[k] == '-c' or _SH_C_CLUSTER.fullmatch(toks[k])), None)
@@ -386,9 +412,6 @@ def write_targets(cmd, cwd, shell='bash', isdir=os.path.isdir, max_files=MAX_GLO
             if dest and _is_literal(dest[0]):
                 cwd = to_abs(dest[0], cwd)
             continue
-        for t in _redirect_targets(seg):
-            if _is_literal(t):
-                res.append(('redirect', t, cwd))
         if not toks:
             continue
         g = _git_rollback_dir(toks, cwd)
@@ -459,7 +482,7 @@ def write_targets(cmd, cwd, shell='bash', isdir=os.path.isdir, max_files=MAX_GLO
     # python writes: in the command part and in heredoc bodies; a relative path is from the cwd after cd
     for part in [head] + bodies:
         for m in PY_WRITE.finditer(part):
-            p = m.group('a') or m.group('b') or m.group('c')
+            p = m.group('a') or m.group('b') or m.group('c') or m.group('d')
             if _is_literal(p):
                 res.append(('python', p, cwd))
     seen, out = set(), []
@@ -713,9 +736,15 @@ def _strip_redirects(toks):
     return out
 
 
+_PATH_WITH_SPACES = re.compile(r'(?:[A-Za-z]:|~)?[\\/].*[\\/][^\s\\/]+')
+
+
 def _basename(tok):
     if re.search(r'\s', tok):
-        return tok.lower()              # a whole command line in one word (`cmd /c "..."`): no head here
+        if _PATH_WITH_SPACES.fullmatch(tok) and not re.search(r'\s-', tok):
+            tok = re.split(r'[\\/]', tok)[-1]    # a PATH with a space in it (`"C:\Program Files\...\psql.exe"`): the file name is the head
+        else:
+            return tok.lower()          # a whole command line in one word (`cmd /c "..."`): no head here
     b = re.split(r'[\\/]', tok)[-1].lower()
     if b.endswith('.exe'):
         b = b[:-4]
@@ -732,6 +761,9 @@ def _peel(toks, info=None):
         b = _basename(t)
         if _ASSIGN.match(t) or t in KEYWORDS:
             i += 1
+            continue
+        if t in ('&', '.') and i + 1 < len(toks):
+            i += 1                      # PowerShell call operator `& "C:\Program Files\...\psql.exe" ...` and dot-sourcing `. psql ...`: the head is the next word
             continue
         if t.startswith('$') and i + 1 < len(toks) and toks[i + 1] == '=':
             i += 2                      # PowerShell `$null = Remove-Item x`
@@ -1009,6 +1041,7 @@ def _walk(command, tool, depth, acc, cwd):
             line_bodies.setdefault(idx, []).append('\n'.join(lines[i:j]))
             i = j + 1
     kept = _strip_comments_lines(kept, ps)          # `# ...` outside quotes is not code
+    cwd_sure = True                     # False after a `cd` whose target is not a literal path: the later relative paths are read against the OLD folder
     for idx, line in enumerate(kept):
         scanned, subs = _scan(line, ps)
         for s in subs:
@@ -1020,6 +1053,8 @@ def _walk(command, tool, depth, acc, cwd):
         for seg, sep in segs:
             pieces = _brace_split(seg, ps)
             pieces_by_seg.append((pieces, sep))
+        visit = getattr(acc, 'visit', None)     # an observer of the executed heads (db.py): same scanner, other question
+        prev_text = ''
         for pieces, sep in pieces_by_seg:
             for piece in pieces:
                 toks = _strip_redirects(_words(piece, ps))
@@ -1029,6 +1064,11 @@ def _walk(command, tool, depth, acc, cwd):
                         toks = ([m.group(1)] if m.group(1) else []) + toks[1:]
                 info = {}
                 k = _peel(toks, info)
+                if visit is not None:
+                    visit(_basename(toks[k]) if k >= 0 else '', toks[k + 1:] if k >= 0 else [],
+                          toks[:k] if k >= 0 else toks,
+                          {'tool': tool, 'cwd': cwd, 'sep': sep, 'piece': piece, 'prev': prev_text,
+                           'bodies': line_bodies.get(idx, []), 'cwd_sure': cwd_sure})
                 if k < 0:
                     continue
                 head, args = _basename(toks[k]), toks[k + 1:]
@@ -1036,6 +1076,8 @@ def _walk(command, tool, depth, acc, cwd):
                     dest = [t for t in args if not t.startswith('-') and t.lower() != '/d']
                     if dest and _is_literal(dest[0]):
                         cwd = to_abs(dest[0], cwd)
+                    else:
+                        cwd_sure = False
                     continue
                 v = _delete_verdict(head, args, tool)
                 if v:
@@ -1066,6 +1108,7 @@ def _walk(command, tool, depth, acc, cwd):
                             _python_code(args[j + 1], depth + 1, acc, cwd)
                 if line_has_heredoc and stdin_kind is None and _stdin_code(head, args):
                     stdin_kind = 'shell' if head in SHELLS else 'python'
+            prev_text = ' '.join(pieces)
         if line_has_heredoc and stdin_kind:
             for hb in line_bodies[idx]:
                 if stdin_kind == 'shell':
@@ -1096,3 +1139,180 @@ def delete_targets(command, cwd, shell='bash'):
             uniq.append(p)
     acc.paths = uniq
     return acc
+
+
+# ---- appends: what write_targets leaves out because an append overwrites nothing (a guard of a FILE that must not be written at all asks for them)
+
+def _append_redirect_targets(seg):
+    """Targets of `>>` outside quotes in one segment."""
+    out, q, i, n = [], None, 0, len(seg)
+    while i < n:
+        ch = seg[i]
+        if q:
+            if ch == q:
+                q = None
+            elif ch == '\\' and q == '"':
+                i += 1
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            q = ch
+            i += 1
+            continue
+        if ch == '>' and seg[i + 1:i + 2] == '>' and seg[i - 1:i] != '>':
+            j = i + 2
+            while j < n and seg[j] == ' ':
+                j += 1
+            if j < n and seg[j] in ('"', "'"):
+                k = seg.find(seg[j], j + 1)
+                tgt = seg[j + 1:k if k > 0 else n]
+                i = (k + 1) if k > 0 else n
+            else:
+                k = j
+                while k < n and seg[k] not in ' \t;|&)<>':
+                    k += 1
+                tgt = seg[j:k]
+                i = k
+            if tgt:
+                out.append(tgt)
+            continue
+        i += 1
+    return out
+
+
+def append_targets(cmd, cwd, shell='bash'):
+    """[absolute path] of the files a command APPENDS to with a literal path: `>>`, `tee -a`, Add-Content, and python `open('f', 'a')` / `Path('f').open('a')`.
+    `write_targets` does not list them (an append overwrites nothing, so nothing is copied first); the guard of the settings files and of the journals of
+    the store, which must not be written at all, asks for them."""
+    ps = shell == 'powershell'
+    out = []
+    if not isinstance(cmd, str) or not cmd.strip():
+        return out
+    text = cmd.replace('\\\n', ' ').replace('`\n', ' ')
+    head, bodies = _strip_heredoc_bodies(text)
+    head = '\n'.join(_strip_comments_lines(head.split('\n'), ps))
+    for part in [head] + bodies:             # python: in the command part and in heredoc bodies, like write_targets
+        for m in PY_APPEND.finditer(part):
+            p = m.group('b') or m.group('d')
+            if _is_literal(p):
+                out.append(to_abs(p, cwd))
+    for seg in _split_segments(head, ps):
+        seg = seg.lstrip('({').rstrip(')}').strip() or seg
+        toks = _strip_to_head(_tokens(seg, ps))
+        verb = os.path.basename(toks[0]).lower() if toks else ''
+        if verb.endswith('.exe'):
+            verb = verb[:-4]
+        low = [t.lower() for t in toks]
+        for t in _outer_redirects(seg, append=True):         # (the segment's own `>>`, also when it is a wrapper: `bash -c "..." >> f`)
+            if _is_literal(t):
+                out.append(to_abs(t, cwd))
+        if verb in ('bash', 'sh', 'zsh', 'dash'):
+            k = next((k for k in range(1, len(toks) - 1) if toks[k] == '-c' or _SH_C_CLUSTER.fullmatch(toks[k])), None)
+            if k is not None:
+                out += append_targets(toks[k + 1], cwd, 'bash')
+                continue
+        if verb in ('pwsh', 'powershell') and any(t in ('-command', '-c') for t in low[1:-1]):
+            k = next(i for i, t in enumerate(low) if i and t in ('-command', '-c'))
+            if k + 1 < len(toks):
+                out += append_targets(toks[k + 1], cwd, 'powershell')
+            continue
+        if verb == 'cmd':
+            k = next((k for k in range(1, len(toks)) if low[k] in ('/c', '/k', '//c', '//k')), None)
+            if k is not None and k + 1 < len(toks):
+                out += append_targets(' '.join(toks[k + 1:]), cwd, 'bash')
+                continue
+        if verb in ('cd', 'pushd', 'set-location', 'sl', 'chdir'):
+            dest = [t for t in toks[1:] if not t.startswith('-') and t.lower() != '/d']
+            if dest and _is_literal(dest[0]):
+                cwd = to_abs(dest[0], cwd)
+            continue
+        args = [t for t in toks[1:] if not t.startswith('-')]
+        if verb == 'tee' and any(t in ('-a', '--append') for t in toks[1:]):
+            out += [to_abs(t, cwd) for t in args if _is_literal(t)]
+        elif verb in ('add-content', 'ac') and args and _is_literal(args[0]):
+            out.append(to_abs(args[0], cwd))
+    return list(dict.fromkeys(out))
+
+
+# ---- writes whose target cannot be read from the text: the guard of a FILE that must not be written asks for them
+
+PS_WRITE_VERBS = {'set-content': 'ps', 'add-content': 'ps', 'ac': 'ps', 'sc': 'ps', 'out-file': 'ps', 'tee-object': 'ps', 'export-csv': 'ps'}
+
+
+def _opaque(t):
+    """A write target that is not a literal path: a variable, a substitution, a mask, a computed name (`/dev/null`, `$null` and the like are no file)."""
+    return bool(t) and t not in NULLS and not t.startswith('&') and not _is_literal(t)
+
+
+def unreadable_writes(cmd, cwd, shell='bash'):
+    """[(form, target text)] of the writes of a command whose target is NOT a literal path -- `>` / `>>` (also of a wrapper: `bash -c "..." >> $F`), `tee`,
+    `sed -i`, `cp` / `mv` / `install` (the destination), `dd of=`, `Add-Content` / `Set-Content` / `Out-File` / `Tee-Object` / `Export-Csv` -- also inside `bash -c`,
+    `pwsh -Command` and `cmd /c`. `write_targets` and `append_targets` cannot name the file of such a write, so a guard of files that must not be written at all
+    (the settings of the kit, the record of the conversation) cannot tell where it goes; the hook asks this function, and refuses such a write when the target or the
+    text of the command points at what is guarded. A write from inside a program the command runs stays outside (declared)."""
+    ps = shell == 'powershell'
+    out = []
+    if not isinstance(cmd, str) or not cmd.strip():
+        return out
+    text = cmd.replace('\\\n', ' ').replace('`\n', ' ')
+    head, _bodies = _strip_heredoc_bodies(text)
+    head = '\n'.join(_strip_comments_lines(head.split('\n'), ps))
+    for seg in _split_segments(head, ps):
+        seg = seg.lstrip('({').rstrip(')}').strip() or seg
+        toks = _strip_to_head(_tokens(seg, ps))
+        verb = os.path.basename(toks[0]).lower() if toks else ''
+        if verb.endswith('.exe'):
+            verb = verb[:-4]
+        low = [t.lower() for t in toks]
+        for t in _outer_redirects(seg):
+            if _opaque(t):
+                out.append(('redirect', t))
+        for t in _outer_redirects(seg, append=True):
+            if _opaque(t):
+                out.append(('append', t))
+        if verb in ('bash', 'sh', 'zsh', 'dash'):
+            k = next((k for k in range(1, len(toks) - 1) if toks[k] == '-c' or _SH_C_CLUSTER.fullmatch(toks[k])), None)
+            if k is not None:
+                out += unreadable_writes(toks[k + 1], cwd, 'bash')
+                continue
+        if verb in ('pwsh', 'powershell') and any(t in ('-command', '-c') for t in low[1:-1]):
+            k = next(i for i, t in enumerate(low) if i and t in ('-command', '-c'))
+            if k + 1 < len(toks):
+                out += unreadable_writes(toks[k + 1], cwd, 'powershell')
+            continue
+        if verb == 'cmd':
+            k = next((k for k in range(1, len(toks)) if low[k] in ('/c', '/k', '//c', '//k')), None)
+            if k is not None and k + 1 < len(toks):
+                out += unreadable_writes(' '.join(toks[k + 1:]), cwd, 'bash')
+                continue
+        if not toks or verb in ('cd', 'pushd', 'set-location', 'sl', 'chdir'):
+            continue
+        args = [t for t in toks[1:] if not t.startswith('-')]
+        if verb == 'tee':
+            out += [('tee', t) for t in args if _opaque(t)]
+        elif verb == 'sed' and any(re.match(r'^-[a-zA-Z]*i', t) or t.startswith('--in-place') for t in toks[1:]):
+            has_e = any(t in ('-e', '-f') or t.startswith('--expression') for t in toks[1:])
+            out += [('sed -i', t) for t in (args if has_e else args[1:]) if _opaque(t)]
+        elif verb == 'dd':
+            out += [('dd', t[3:]) for t in toks[1:] if t.startswith('of=') and _opaque(t[3:])]
+        elif verb in ('cp', 'mv', 'install') and shell != 'powershell' and len(args) >= 2:
+            if _opaque(args[-1]):
+                out.append((verb, args[-1]))
+        else:
+            psverb = PS_ALIASES.get(verb, verb) if (ps or verb in ('sc', 'cpi', 'mi', 'copy', 'move')) else verb
+            if psverb in ('copy-item', 'move-item') or psverb in PS_WRITE_VERBS:
+                named, rest = {}, []
+                it = iter(toks[1:])
+                for t in it:
+                    tl = t.lower()
+                    if tl.startswith('-') and tl not in PS_SWITCHES and ':' not in tl:
+                        named[tl] = next(it, '')
+                    elif not tl.startswith('-'):
+                        rest.append(t)
+                if psverb in ('copy-item', 'move-item'):
+                    d = named.get('-destination') or (rest[1] if len(rest) > 1 else '')
+                else:
+                    d = named.get('-path') or named.get('-filepath') or named.get('-literalpath') or (rest[0] if rest else '')
+                if _opaque(d):
+                    out.append(('ps', d))
+    return list(dict.fromkeys(out))

@@ -4,13 +4,13 @@
     "name": "Serpentis-Git"
   },
   "metadata": {
-    "description": "ShedKeeper: a copy before every change, the trash instead of deletion"
+    "description": "ShedKeeper: a copy before the changes it recognizes (see Borders in the README), the trash instead of deletion, a dump before a database is destroyed"
   },
   "plugins": [
     {
       "name": "shedkeeper",
       "source": "./",
-      "description": "A safety net for work done by an AI coding agent on your files: a verified copy before every change, the trash instead of deletion, a way back by your word."
+      "description": "A safety net for the work an AI coding agent (Claude Code) does on your files and databases: a verified copy before the changes it recognizes (what it does not see: Borders in the README), the trash instead of deletion, a dump of a PostgreSQL or SQLite database before data is destroyed, a way back by your word."
     }
   ]
 }

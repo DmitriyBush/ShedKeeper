@@ -16,10 +16,12 @@ the record this installer keeps of what it wrote (`installs.jsonl` in the user's
 folder `hooks`, and a look at its file answers "not found" (anything else -- no permission, a volume that
 cannot be reached -- is "not known": the line stays and is named). Lines of colleagues, of other tools, of an
 earlier release that kept no record are never removed. A settings file that is not valid JSON is never
-touched. The timeout of both hooks is 60 seconds: by the hook contract a timeout lets the action
-through, so it must be longer than the slowest normal run. The 60 s are a budget, not a guess: the
-pre_tool hook spends at most cmd_deadline_s (20 s by default) on copies and at most 10 s on git calls
-(two of 5 s), which leaves 30 s of margin for the interpreter start and one slow copy.
+touched. The timeout of the hooks that copy (pre_tool, session) is 90 seconds: by the hook contract a timeout lets the action
+through, so it must be longer than the slowest normal run. The hook of the prompt (UserPromptSubmit, prompt.py) is given 30 seconds (TIMEOUTS): it runs
+while the person waits for the answer to a message, reads one message and writes one line -- a fraction of a second. The 90 s are a budget, not a guess: the
+pre_tool hook spends at most cmd_deadline_s (20 s by default) on copies, at most 10 s on git calls
+(two of 5 s) and at most db_deadline_s (25 s by default) on the copies of databases, about 3 s go on the start of the
+interpreter -- 58 s in all, which leaves 32 s of margin (it was 60 s before the databases).
 
 TWO DOORS. The same hooks also come as a Claude Code PLUGIN (`.claude-plugin/`, `hooks/hooks.json`; installed
 with `/plugin`). The plugin and this installer are two ways in to one set of hooks, and both at once would run
@@ -44,25 +46,34 @@ import sys
 import time
 
 KIT = os.path.dirname(os.path.abspath(__file__))
-TIMEOUT_S = 60
-PRE_MATCHER = "Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell"
+TIMEOUT_S = 90
+# `mcp__.*`: every MCP tool (also `mcp__plugin_<plugin>_<server>__<tool>`) reaches the hook; the hook lets the ones that destroy no database pass
+PRE_MATCHER = "Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell|mcp__.*"
 # (event, matcher or None, script)
 ENTRIES = [("PreToolUse", PRE_MATCHER, "pre_tool.py"),
            ("SessionStart", None, "session.py"),
-           ("SessionEnd", None, "session.py")]
+           ("SessionEnd", None, "session.py"),
+           ("UserPromptSubmit", None, "prompt.py")]
+# the timeout of a hook, by event. The prompt hook runs while the person waits for the answer to their message and does one regular expression and one small
+# file write: 30 s is far more than it needs (measured: well under a second) and far less than the 90 s of the hooks that copy files and databases.
+TIMEOUTS = {"UserPromptSubmit": 30}
+
+
+def timeout_for(event):
+    return TIMEOUTS.get(event, TIMEOUT_S)
 
 
 def _fwd(s):
     return s.replace("\\", "/").lower()
 
 
-HOOK_FILES = ("pre_tool.py", "session.py")
-EVENTS = ("PreToolUse", "SessionStart", "SessionEnd")
+HOOK_FILES = ("pre_tool.py", "session.py", "prompt.py")
+EVENTS = ("PreToolUse", "SessionStart", "SessionEnd", "UserPromptSubmit")
 PLUGIN = "shedkeeper"                   # `name` in .claude-plugin/plugin.json and in marketplace.json
 PLUGIN_ID = "shedkeeper@shedkeeper"     # plugin@marketplace: what /plugin install and /plugin uninstall take
 VIA_PLUGIN = "--via-plugin"             # the argument the hooks of the plugin are started with
 RECORD_NAME = "installs.jsonl"          # in the personal folder of the store: what this installer wrote where
-PLUGIN_FILES = ("hooks/hooks.json", "hooks/pre_tool.py", "hooks/session.py")    # what an installed plugin must hold
+PLUGIN_FILES = ("hooks/hooks.json", "hooks/pre_tool.py", "hooks/session.py", "hooks/prompt.py")    # what an installed plugin must hold
 
 
 def _sq(s):
@@ -86,7 +97,7 @@ def lost_messages(hook_path, settings_file):
               "(from wherever ShedKeeper is now) or to remove the ShedKeeper lines from %s. If you moved it, run "
               "`python install.py install` from its new folder: it takes out the old lines it wrote itself and "
               "puts in new ones." % (hook_path, settings_file))
-    agent = ("ShedKeeper hook file not found at %s: the protection is OFF -- tell the person. You are allowed "
+    agent = ("ShedKeeper hook file not found at %s: the protection is OFF (the person has the message of their own). You are allowed "
              "to edit %s: if ShedKeeper was removed, delete the entries whose command names that path (or run "
              "python <kit folder>/install.py uninstall --project <dir> (or --user) from a kit that is still there); "
              "if the folder was moved, run python <new folder>/install.py install --project <dir> (or --user): it "
@@ -95,13 +106,13 @@ def lost_messages(hook_path, settings_file):
 
 
 def no_python_messages():
-    """(for the person, for the agent): what a hook says when `python` cannot be started (exit 126 / 127). ASCII, no
-    double quote, no backslash: the same limits as lost_messages."""
-    person = ("ShedKeeper cannot run: Python was not found (or `python` is the Microsoft Store placeholder) -- its "
-              "protection is OFF: no copy is saved before an edit, nothing goes to the trash. Install Python "
-              "(python.org, tick Add python.exe to PATH) and restart Claude Code.")
-    agent = ("ShedKeeper cannot run: Python was not found (or `python` is the Microsoft Store placeholder) -- the "
-             "protection is OFF -- tell the person before changing or deleting files.")
+    """(for the person, for the agent): what a hook says when `python` cannot run the hook file (any exit code other than 0 and 2: 126 / 127 --
+    bash could not start it; 1 and the rest -- the interpreter itself failed). ASCII, no double quote, no backslash: the same limits as lost_messages."""
+    person = ("ShedKeeper cannot run: Python was not found (or `python` is the Microsoft Store placeholder), or Python itself failed on the hook "
+              "file -- its protection is OFF: no copy is saved before an edit, nothing goes to the trash. Install or repair Python "
+              "(python.org, tick Add python.exe to PATH) and restart Claude Code; `python install.py check` shows the state.")
+    agent = ("ShedKeeper cannot run: Python was not found (or `python` is the Microsoft Store placeholder), or Python itself failed on the hook "
+             "file -- the protection is OFF: no copy is saved before an edit and nothing goes to the trash (the person has the message of their own).")
     return person, agent
 
 
@@ -115,13 +126,14 @@ def _warning_json(event, person, agent):
 def _guarded(file_word, run_word, event, lost_json):
     """The one form of every hook command (settings and plugin):
 
-        if [ -f F ]; then python R; rc=$?; if [ $rc -eq 126 ] || [ $rc -eq 127 ]; then printf '%s' <NOPY>; exit 0; fi; exit $rc; else printf '%s' <LOST>; fi
+        if [ -f F ]; then python R; rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 2 ]; then printf '%s' <NOPY>; exit 0; fi; exit $rc; else printf '%s' <LOST>; fi
 
-    The file is there: python runs it and its exit code is the exit code of the whole (2 = a block still blocks),
-    except 126 / 127 (bash could not start `python`: not found, or the Microsoft Store placeholder; python itself
-    never exits so) -> a loud warning and exit 0. The file is gone: the other loud warning, exit 0."""
+    The file is there: python runs it and its exit code is the exit code of the whole (0 = a pass, 2 = a block still blocks), and
+    only those two are the hook's own: the scripts of the kit exit with 0 or 2 and nothing else. Any other code (126 / 127: bash could
+    not start `python`; 1: the interpreter itself failed -- a broken PYTHONHOME, a damaged module, a half-updated plugin; 137, 139 ...)
+    means the hook did not decide -> a loud warning and exit 0, never a silent pass. The file is gone: the other loud warning, exit 0."""
     person, agent = no_python_messages()
-    return ("if [ -f %s ]; then python %s; rc=$?; if [ $rc -eq 126 ] || [ $rc -eq 127 ]; then printf '%%s' %s; exit 0; fi; "
+    return ("if [ -f %s ]; then python %s; rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 2 ]; then printf '%%s' %s; exit 0; fi; "
             "exit $rc; else printf '%%s' %s; fi" % (file_word, run_word, _warning_json(event, person, agent), lost_json))
 
 
@@ -153,6 +165,9 @@ def _build(hook, event, settings_file=None):
 _QUOTED = r"'(?:[^']|'\\'')*'"
 _GUARDED = re.compile(r"^if \[ -f (%s) \]; then python (%s); else printf '%%s' (%s); fi$" % (_QUOTED, _QUOTED, _QUOTED))   # 0.2.0
 _GUARDED_RC = re.compile(
+    r"^if \[ -f (%s) \]; then python (%s); rc=\$\?; if \[ \$rc -ne 0 \] && \[ \$rc -ne 2 \]; then printf '%%s' (%s); exit 0; fi; "
+    r"exit \$rc; else printf '%%s' (%s); fi$" % (_QUOTED, _QUOTED, _QUOTED, _QUOTED))
+_GUARDED_RC126 = re.compile(            # the earlier form of 0.3.0: only 126 / 127 were warned about (an interpreter that exits 1 passed silently)
     r"^if \[ -f (%s) \]; then python (%s); rc=\$\?; if \[ \$rc -eq 126 \] \|\| \[ \$rc -eq 127 \]; then printf '%%s' (%s); exit 0; fi; "
     r"exit \$rc; else printf '%%s' (%s); fi$" % (_QUOTED, _QUOTED, _QUOTED, _QUOTED))
 _PLAIN = re.compile(r'^python "([^"]+)"$')
@@ -165,7 +180,7 @@ def parse_command(command):
     if not isinstance(command, str):
         return None
     c = command.strip()
-    m = _GUARDED_RC.match(c)
+    m = _GUARDED_RC.match(c) or _GUARDED_RC126.match(c)
     lost = 4
     if not m:
         m, lost = _GUARDED.match(c), 3
@@ -210,8 +225,7 @@ def is_ours(command, script=None):
 def _absence(p):
     """Is there a file at `p`? 'present' | 'absent' | 'offline' | 'unknown: <why>'. 'absent' is said ONLY when the
     system answers "not found" (FileNotFoundError / NotADirectoryError from os.stat). os.path.exists cannot do
-    this: it answers False to a refusal of access too (measured, Python 3.x on Windows -- see the report of
-    order 6), so a file of another account would be read as gone. A drive (or share) whose root cannot be looked
+    this: it answers False to a refusal of access too (measured, Python 3.x on Windows), so a file of another account would be read as gone. A drive (or share) whose root cannot be looked
     at is 'offline': a disk that is unplugged is not a deleted folder."""
     drive = os.path.splitdrive(p)[0]
     if drive:
@@ -298,7 +312,7 @@ def _norm_settings(p):
 def _personal_root(path):
     """(store module, settings dict, personal folder of this user on the volume of `path` or None)."""
     config, store = _kit_mods()
-    settings, _problems = config.load()
+    settings, _problems = config.load(integrity=False)
     return store, settings, store.store_root(path, settings)
 
 
@@ -618,10 +632,10 @@ def install(path, add_entries=True):
             if mine:
                 for g, h in mine:
                     touched = False
-                    if h.get("timeout") != TIMEOUT_S or h.get("type") != "command":
-                        h["type"], h["timeout"] = "command", TIMEOUT_S
+                    if h.get("timeout") != timeout_for(event) or h.get("type") != "command":
+                        h["type"], h["timeout"] = "command", timeout_for(event)
                         changed = touched = True
-                        out.append("%s/%s: entry updated (timeout %d)" % (event, script, TIMEOUT_S))
+                        out.append("%s/%s: entry updated (timeout %d)" % (event, script, timeout_for(event)))
                     want = hook_command(script, event, path)
                     if parse_command(h.get("command")) and h.get("command") != want:
                         h["command"] = want
@@ -639,7 +653,7 @@ def install(path, add_entries=True):
                     if not touched:
                         out.append("%s/%s: already installed" % (event, script))
                 continue
-            group = {"hooks": [{"type": "command", "command": hook_command(script, event, path), "timeout": TIMEOUT_S}]}
+            group = {"hooks": [{"type": "command", "command": hook_command(script, event, path), "timeout": timeout_for(event)}]}
             if matcher:
                 group = dict([("matcher", matcher)] + list(group.items()))
             groups.append(group)
@@ -699,8 +713,8 @@ def plugin_lost_messages():
     person = ("ShedKeeper plugin files were not found: its protection is OFF (no copy is saved before an edit, "
               "nothing goes to the trash). Reinstall it with /plugin install %s, or remove it with "
               "/plugin uninstall %s." % (PLUGIN_ID, PLUGIN_ID))
-    agent = ("ShedKeeper plugin files were not found: the protection is OFF -- tell the person. Do not edit the "
-             "plugin cache by hand. The person reinstalls with /plugin install %s or removes it with "
+    agent = ("ShedKeeper plugin files were not found: the protection is OFF. The plugin cache is not edited by hand; "
+             "the person reinstalls with /plugin install %s or removes it with "
              "/plugin uninstall %s (python <kit folder>/install.py install is the other way in)."
              % (PLUGIN_ID, PLUGIN_ID))
     return person, agent
@@ -723,11 +737,11 @@ def plugin_hooks():
     """The content of hooks/hooks.json: the same events, matcher, timeout and scripts as ENTRIES."""
     hooks = {}
     for event, matcher, script in ENTRIES:
-        group = {"hooks": [{"type": "command", "command": plugin_command(script, event), "timeout": TIMEOUT_S}]}
+        group = {"hooks": [{"type": "command", "command": plugin_command(script, event), "timeout": timeout_for(event)}]}
         if matcher:
             group = dict([("matcher", matcher)] + list(group.items()))
         hooks.setdefault(event, []).append(group)
-    return {"description": "ShedKeeper: a copy before every change, the trash instead of deletion", "hooks": hooks}
+    return {"description": "ShedKeeper: a copy before the changes it recognizes, the trash instead of deletion", "hooks": hooks}
 
 
 def applicable_settings(project=None):
@@ -1120,13 +1134,13 @@ def check_plugin(root):
 
 def installed_hooks(cwd=None, extra_paths=()):
     """Which hooks of the kit are found in the settings files that apply to `cwd` (project settings,
-    project local settings, user settings). {'pre_tool': bool, 'session': bool, 'where': [paths]}."""
+    project local settings, user settings). {'pre_tool': bool, 'session': bool, 'prompt': bool, 'where': [paths]}."""
     paths = list(extra_paths)
     if cwd:
         for name in ("settings.json", "settings.local.json"):
             paths.append(os.path.join(os.path.abspath(cwd), ".claude", name))
     paths.append(os.path.join(user_claude_dir(), "settings.json"))
-    res = {"pre_tool": False, "session": False, "where": []}
+    res = {"pre_tool": False, "session": False, "prompt": False, "where": []}
     for p in paths:
         data, err = _load(p)
         if not data or err:
@@ -1134,13 +1148,47 @@ def installed_hooks(cwd=None, extra_paths=()):
         hooks = data.get("hooks")
         if not isinstance(hooks, dict):
             continue
-        for event, key, script in (("PreToolUse", "pre_tool", "pre_tool.py"), ("SessionStart", "session", "session.py")):
+        for event, key, script in (("PreToolUse", "pre_tool", "pre_tool.py"), ("SessionStart", "session", "session.py"),
+                                   ("UserPromptSubmit", "prompt", "prompt.py")):
             groups = hooks.get(event)
             if isinstance(groups, list) and list(_iter_ours(groups, script, recorded_commands(p)[0])):
                 res[key] = True
                 if p not in res["where"]:
                     res["where"].append(p)
     return res
+
+
+def stale_entries(cwd=None, extra_paths=()):
+    """[text] -- the entries of the kit in the settings that apply to `cwd` that are of an OLDER FORM than this kit installs: the matcher of PreToolUse
+    without the `mcp__.*` of 0.3.0 (every MCP call goes unseen) or a timeout other than TIMEOUT_S (0.2.0 installed 60 s; the database budget of
+    0.3.0 is 58 s of it, so a slow copy gets the hook cut off and the action passes). The same comparison `check` makes, so the start of a session
+    can say it without running `check`."""
+    paths = list(extra_paths)
+    if cwd:
+        for name in ("settings.json", "settings.local.json"):
+            paths.append(os.path.join(os.path.abspath(cwd), ".claude", name))
+    paths.append(os.path.join(user_claude_dir(), "settings.json"))
+    out = []
+    for p in paths:
+        data, err = _load(p)
+        if err:                 # the file is there and cannot be read: whether the hook stands in it is not known -- said, not skipped
+            out.append("%s could not be checked (%s)" % (p, err.replace(" -- not touched", "")))
+            continue
+        if not data or not isinstance(data.get("hooks"), dict):
+            continue
+        for event, matcher, script in ENTRIES:
+            groups = data["hooks"].get(event)
+            if not isinstance(groups, list):
+                continue
+            for g, h in _iter_ours(groups, script, recorded_commands(p)[0]):
+                bits = []
+                if h.get("timeout") != timeout_for(event):
+                    bits.append("timeout %r, now %d" % (h.get("timeout"), timeout_for(event)))
+                if matcher and g.get("matcher") != matcher:
+                    bits.append("matcher %r, now %r" % (g.get("matcher"), matcher))
+                if bits:
+                    out.append("%s %s: %s" % (p, event, "; ".join(bits)))
+    return out
 
 
 def find_bash():
@@ -1283,8 +1331,8 @@ def check(path, project=None):
             continue
         g, h = mine[0]
         bits = ["installed"]
-        if h.get("timeout") != TIMEOUT_S:
-            bits.append("timeout is %r, expected %d" % (h.get("timeout"), TIMEOUT_S))
+        if h.get("timeout") != timeout_for(event):
+            bits.append("timeout is %r, expected %d" % (h.get("timeout"), timeout_for(event)))
             allok = False
         if matcher and g.get("matcher") != matcher:
             bits.append("matcher is %r, expected %r" % (g.get("matcher"), matcher))
@@ -1297,8 +1345,12 @@ def check(path, project=None):
             bits.append("the command is of the old form (a missing ShedKeeper folder would BLOCK every guarded "
                         "tool): `python install.py install` brings it up to date")
             allok = False
+        elif parsed and _GUARDED_RC126.match(h.get("command").strip()):
+            bits.append("the command is of the 0.2.0 form (a Python that fails with an exit code other than 126 / 127, 1 for one, lets the "
+                        "action pass WITHOUT a warning): `python install.py install` brings it up to date")
+            allok = False
         elif parsed and not _GUARDED_RC.match(h.get("command").strip()):
-            bits.append("the command is of the 0.2.0 form (a Python that cannot start lets the action pass WITHOUT a "
+            bits.append("the command is of an earlier form (a Python that cannot start lets the action pass WITHOUT a "
                         "warning): `python install.py install` brings it up to date")
             allok = False
         out.append("%s/%s: %s" % (event, script, ", ".join(bits)))
