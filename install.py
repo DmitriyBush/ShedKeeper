@@ -46,9 +46,17 @@ import sys
 import time
 
 KIT = os.path.dirname(os.path.abspath(__file__))
-TIMEOUT_S = 90
-# `mcp__.*`: every MCP tool (also `mcp__plugin_<plugin>_<server>__<tool>`) reaches the hook; the hook lets the ones that destroy no database pass
-PRE_MATCHER = "Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell|mcp__.*"
+if KIT not in sys.path:
+    sys.path.insert(0, KIT)
+try:
+    from shedkeeper import config as _kit_config
+    TIMEOUT_S = _kit_config.HOOK_TIMEOUT_S      # ONE number for the whole kit (shedkeeper/config.py)
+except Exception:                               # a package that does not load must not shut the door the hook names (`install.py uninstall`): the number of the kit stands
+    TIMEOUT_S = 90
+# `.*`: EVERY tool reaches the hook, also one that does not exist yet (a tool that runs a command, deletes a work tree ...): the closed list of the readers (config.READ_ONLY_TOOLS)
+# is cut by the hook itself. Cost, measured (report 55, sect. 4): a call of a tool that the earlier matcher did not send to the hook costs the start of the hook, about 130 ms (Python started
+# afresh, the hook run as a subprocess); the extra cost of the `bash` wrapper that the plugin form puts round every call is NOT measured.
+PRE_MATCHER = ".*"
 # (event, matcher or None, script)
 ENTRIES = [("PreToolUse", PRE_MATCHER, "pre_tool.py"),
            ("SessionStart", None, "session.py"),

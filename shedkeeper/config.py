@@ -19,6 +19,16 @@ import os
 import re
 
 PRODUCT = "shedkeeper"
+# A switch of the RELEASE, not a setting: nobody (neither the person nor the agent) turns it on from an ini or a command. The code of the databases stays in the kit
+# (and keeps being tested with this name replaced by True); in this release the protected list holds files only.
+DATABASES_IN_THIS_RELEASE = False
+# The timeout the hooks are installed with (install.py reads it too): the check before a step and the accelerators together stay inside it. ONE number for the whole kit.
+HOOK_TIMEOUT_S = 90
+# The closed list of the tools that only READ: the check before a step lets them pass; every other tool (also one that does not exist yet) is checked.
+READ_ONLY_TOOLS = ("Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "TaskList", "TaskGet", "TaskOutput", "ListAgents", "ToolSearch")
+# The tools that STOP a process that is running or ASK the person. They change no data and are never refused: an agent that cannot stop a deletion that is running in the background, or
+# cannot ask the person what to do, is worse off than one whose check works. A closed list apart from the readers (a reader is let through because it reads; these because they stop or ask).
+CONTROL_TOOLS = ("AskUserQuestion", "TaskStop", "KillShell", "ExitPlanMode")
 DEFAULT_STORE_DIR = "_shedkeeper"
 KIT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_INI = os.path.join(KIT_DIR, "shedkeeper.ini")
@@ -44,18 +54,29 @@ DEFAULTS = {
     "mcp_no_db": (),
     "db_fresh_minutes": 10,
     "db_command": (),
+    "step_budget_s": 60,
+    "walk_budget_ms": 3000,
+    "usn_resolve_max": 2000,
+    "lock_wait_s": 30,
+    "sqlite_busy_s": 5,
+    "max_db_mb_every_step": 50,
+    "before_confirm": "accelerators",
 }
 KEYS = ("store_dir_name", "auto_create_store", "private_store", "max_copy_mb", "on_too_large", "cmd_max_files", "cmd_deadline_s",
         "db_protection", "pg_dump_path", "max_db_mb", "db_deadline_s", "on_db_too_large", "on_db_remote", "on_db_unsupported",
-        "db_fresh_minutes", "mcp_no_db", "db_command")
+        "db_fresh_minutes", "mcp_no_db", "db_command", "step_budget_s", "walk_budget_ms", "usn_resolve_max", "lock_wait_s", "sqlite_busy_s",
+        "max_db_mb_every_step", "before_confirm")
 BOOL_KEYS = ("auto_create_store", "private_store", "db_protection")
 CHOICE_KEYS = ("on_too_large", "on_db_too_large", "on_db_remote", "on_db_unsupported")
 LIST_KEYS = ("mcp_no_db", "db_command")
+# a key with a closed set of words: the first word is the safe one (the value used when the text is not understood)
+ENUM_KEYS = {"before_confirm": ("accelerators", "provisional")}
 # the bool keys whose not understood value is `true` (the safe side); auto_create_store falls to `false`
 SAFE_BOOL = {"auto_create_store": False, "private_store": True, "db_protection": True}
 SAFE_BOOL_WHY = {"private_store": "the personal folder is closed to other users", "db_protection": "databases are guarded"}
 INT_LIMITS = {"max_copy_mb": 10 ** 7, "cmd_max_files": 10 ** 6, "cmd_deadline_s": 3600, "max_db_mb": 10 ** 7,
-              "db_deadline_s": 3600, "db_fresh_minutes": 1440}
+              "db_deadline_s": 3600, "db_fresh_minutes": 1440, "step_budget_s": 3600, "walk_budget_ms": 600000, "usn_resolve_max": 10 ** 7,
+              "lock_wait_s": 3600, "sqlite_busy_s": 3600, "max_db_mb_every_step": 10 ** 7}
 # The weight of every setting: (weight, applies, effect). protection = a value can stop protecting something; tuning = a limit or a place,
 # protection stays; notice = only what the person is told. `applies`: the values for which the effect holds -- a list of words, `*` (any
 # non-empty value), `>default` / `>N` (a number above); an empty list = any value that is not the default. `effect` says what stops being
@@ -78,6 +99,13 @@ WEIGHTS = {
     "db_fresh_minutes": ("protection", (">default",), "an older `dbcopy` copy still counts as fresh, so a command may pass on a copy made before the data last changed"),
     "mcp_no_db": ("protection", ("*",), "the calls of the named servers pass WITHOUT a stop, also the ones that destroy data in a database behind them"),
     "db_command": ("notice", (), ""),
+    "step_budget_s": ("protection", (">default",), "the check before a step may now run longer than the hook is allowed to (90 s with the file copies and the database copies of the accelerators); the hook can be cut off and then the step goes ahead UNPROTECTED"),
+    "walk_budget_ms": ("tuning", (), ""),
+    "usn_resolve_max": ("tuning", (), ""),
+    "lock_wait_s": ("tuning", (), ""),
+    "sqlite_busy_s": ("tuning", (), ""),
+    "max_db_mb_every_step": ("tuning", (), ""),
+    "before_confirm": ("tuning", (), ""),
 }
 _BAD_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
@@ -129,6 +157,12 @@ def apply_value(settings, key, value, where):
     elif key == "mcp_no_db":
         names = [x for x in re.split(r"[\s,]+", value) if x]
         settings[key] = tuple(settings[key]) + tuple(names)       # an empty value is "no servers": the default, no problem
+    elif key in ENUM_KEYS:
+        if value.lower() in ENUM_KEYS[key]:
+            settings[key] = value.lower()
+        else:
+            settings[key] = ENUM_KEYS[key][0]
+            return "%s: %s = %r not understood -> %s is used (the words are: %s)" % (where, key, value, ENUM_KEYS[key][0], " | ".join(ENUM_KEYS[key]))
     elif key in CHOICE_KEYS:
         if value.lower() in ("deny", "allow"):
             settings[key] = value.lower()
@@ -283,6 +317,8 @@ def allowed_text(key):
         return "true | false"
     if key in CHOICE_KEYS:
         return "deny | allow"
+    if key in ENUM_KEYS:
+        return " | ".join(ENUM_KEYS[key])
     if key in INT_LIMITS:
         return "a whole number from 1 to %d" % INT_LIMITS[key]
     if key == "mcp_no_db":
@@ -300,7 +336,7 @@ def canonical(key, value):
     if key in BOOL_KEYS:
         b = _parse_bool(value)
         return "true" if b else "false"
-    if key in CHOICE_KEYS:
+    if key in CHOICE_KEYS or key in ENUM_KEYS:
         return value.lower()
     if key in INT_LIMITS:
         return str(int(value))

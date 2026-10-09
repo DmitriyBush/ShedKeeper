@@ -18,7 +18,7 @@ import sqlite3
 import time
 from datetime import datetime
 
-from . import db, engines
+from . import config, db, engines, protect
 
 
 def _slash(s):
@@ -38,6 +38,8 @@ def _root_for(base, cwd, settings):
 
 def dbcopy(spec, mcp_server, cwd, settings, session=""):
     """-> (exit code, text). 0 done and listed; 1 refused / no copy; 3 copy made but NOT listed (the text says where it is)."""
+    if not config.DATABASES_IN_THIS_RELEASE:          # a release without databases: nothing is read, copied or written
+        return 2, protect.DB_OFF_TEXT
     store = _store()
     use_proofs(cwd, settings)
     base = db.target_from_spec(spec, cwd)
@@ -101,6 +103,17 @@ def find_copies(text, settings, days=None, volume=None):
     """The copies of databases whose engine, identity, name, address, command or file contain `text` (case and slashes ignored).
     -> (hits, problems); a hit has the keys of store.find (kind 'dbcopy')."""
     store = _store()
+    if not config.DATABASES_IN_THIS_RELEASE:          # a release without databases lists none -- but says that records of an earlier build exist, so `find` does not read as "nothing found"
+        n = 0
+        for root in store.all_roots(settings):
+            path = db.index_path(root)
+            if not os.path.isfile(path):
+                continue
+            try:
+                n += sum(1 for _k, r in store._read_jsonl(path)[0] if not r.get("op"))
+            except OSError:
+                return [], ["NOT SEARCHED: databases are off in this release, and the records of database copies in %s could not be read" % path]
+        return [], (["NOT SEARCHED: %d database copy(ies) exist in the store; databases are off in this release, so they are not listed" % n] if n else [])
     needle = _slash(text or "")
     cutoff = None if days is None else datetime.now().date().toordinal() - days
     hits, problems = [], []
@@ -142,6 +155,8 @@ def find_copies(text, settings, days=None, volume=None):
 
 def restore_copy(item_id, settings, to=None, session="", volume=None, now=None):
     """-> (status, text): 'ok' | 'refused' | 'unindexed' | 'blind' (as store.restore)."""
+    if not config.DATABASES_IN_THIS_RELEASE:          # a release without databases brings none back
+        return "refused", protect.DB_OFF_TEXT
     store = _store()
     now = now or datetime.now()
     found = []
@@ -393,6 +408,12 @@ def _installed_timeouts(cwd):
 
 
 def status_lines(settings, cwd=None):
+    if not config.DATABASES_IN_THIS_RELEASE:          # a release without databases says so and looks for no database tool -- but the budget of the hook against its timeout protects the FILES and stays
+        spent = db.budget_s(dict(settings, db_deadline_s=0))
+        installed, default = _installed_timeouts(cwd or os.getcwd())
+        return (["databases: not protected in this release; a later version will add them. Files are protected.",
+                 "hook budget: the database term (db_deadline_s) is not counted in this release"]
+                + budget_lines(spent, installed, default))
     store = _store()
     L = []
     if not settings.get("db_protection", True):

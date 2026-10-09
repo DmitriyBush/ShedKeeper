@@ -1,6 +1,6 @@
 # Security policy
 
-ShedKeeper guards a person's files and databases against the mistakes of an AI coding agent. A flaw in it can
+ShedKeeper guards a person's files against the mistakes of an AI coding agent. A flaw in it can
 mean lost data, so reports are welcome and are taken seriously.
 
 ## How to report a vulnerability

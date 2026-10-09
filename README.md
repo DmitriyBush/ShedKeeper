@@ -1,6 +1,8 @@
 # ShedKeeper
 
-**A safety net for the work an AI coding agent (Claude Code) does on your files and databases -- on Windows.**
+**A safety net for the work an AI coding agent (Claude Code) does on your files -- on Windows.**
+
+**ShedKeeper 0.3.0 protects files. Databases are not protected in this version; a later version will add them.**
 
 What it protects you from:
 
@@ -8,8 +10,6 @@ What it protects you from:
   writes: see [Borders](#borders----what-shedkeeper-does-not-see)), ShedKeeper saves a verified copy (size and sha256 compared). No verified copy -- no change.
 - **A file deleted.** The deletion is refused and the agent is handed the ready command that moves the item to a trash instead.
   Nothing is lost, and the agent is not stuck.
-- **A database destroyed (PostgreSQL, SQLite).** Before a command or an MCP call drops, truncates or wipes data, ShedKeeper takes a
-  dump, reads it back in full, and only then lets the action go.
 - **A loss with no way back.** Ask your agent: it finds what was changed or removed, tells you what it was, and brings it back once
   you say yes. Nothing in ShedKeeper empties the store -- only you do.
 - **The protection switched off by the agent.** A change that weakens it is made only with a confirmation code you type yourself,
@@ -33,7 +33,7 @@ python install.py install --user
 ```
 
 **What it does not do:** it reads the text of a command, so it is a helper for an agent that makes mistakes, not a lock against one
-that looks for a way round; it does not look inside a program that runs; it copies PostgreSQL and SQLite only, on Windows only. The
+that looks for a way round; it does not look inside a program that runs; it works on Windows only. The
 full list: [Borders](#borders----what-shedkeeper-does-not-see) and [Risks](#risks).
 
 ## Contents
@@ -43,8 +43,6 @@ full list: [Borders](#borders----what-shedkeeper-does-not-see) and [Risks](#risk
 - [Updating from 0.2.0](#updating-from-020)
 - [Moving, removing and reinstalling](#moving-removing-and-reinstalling)
 - [Find and bring back](#find-and-bring-back)
-- [Databases (0.3.0)](#databases-030)
-- [Adding another database engine](#adding-another-database-engine)
 - [Settings, the first look, and the words of a stop (0.3.0)](#settings-the-first-look-and-the-words-of-a-stop-030)
 - [Where the store is, and who cleans it](#where-the-store-is-and-who-cleans-it)
 - [What ShedKeeper reads and keeps](#what-shedkeeper-reads-and-keeps)
@@ -72,12 +70,7 @@ A safety net for work done by an AI coding agent (Claude Code) on your files. Th
    was and why it is gone, and brings it back once you say yes -- or you do it yourself with one command.
    Nothing in ShedKeeper empties the store -- only you do.
 
-**The same promise holds for databases since 0.3.0 -- PostgreSQL and SQLite.** A command or an MCP call that DESTROYS data in one
-(`DROP TABLE`, `TRUNCATE`, `DELETE` or `UPDATE` without a `WHERE`, `dropdb`, `prisma migrate reset`, `rails db:drop` ...) gets a verified
-dump of that database first; no verified copy -- no destruction; and the refusal carries a ready command, so the agent is not stuck. See
-"Databases". Another engine (MySQL ...) is not copied: the action passes with a loud warning, or is refused if you say so; an engine is added
-by an **adapter**, which counts as protection only after it has passed a proof on a probe database. How the whole system is built, why, and how
-to add an engine: **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+**ShedKeeper 0.3.0 protects files. Databases are not protected in this version; a later version will add them.** Database protection was built and is switched off for this release: `protect add sqlite|pg|remote`, `dbcopy`, `prove` and `activate` refuse with the words of the release, the survey offers and names no database, a command or an MCP call that destroys data in a database passes unseen, and a database entry that an earlier build left in your list is not checked -- `status` and the line at the start of a session say so, loudly. How the system is built and why: **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 Plain Python 3.9+, standard library only. Windows only in v1.
 
@@ -203,7 +196,7 @@ The installer copies your settings file next to itself first (`settings.json.she
 adds ShedKeeper's hook entries without touching anyone else's, and does nothing on a second run (on a
 second run it also puts back a timeout or a tool matcher that was changed). The hooks that copy are given a
 90-second timeout (the hook of the prompt, which only reads one message and writes one line, 30 seconds): the hook spends at most 20 s on copies (`cmd_deadline_s`), at most 10 s on git
-calls and at most 25 s on the copies of databases (`db_deadline_s`), and the rest is margin -- a hook that times out lets the action through. `python` must be on
+calls (the 25 s that `db_deadline_s` allows for the copies of databases are not used in this release), and the rest is margin -- a hook that times out lets the action through. `python` must be on
 PATH; if it is not (or `python` is the Microsoft Store placeholder), every hook prints a loud warning that the
 protection is OFF and the action passes WITHOUT a copy -- install Python (python.org, tick Add python.exe to
 PATH) and restart Claude Code. The hooks are registered by the absolute path of this folder; see "Moving, removing and
@@ -257,8 +250,10 @@ plugin cache -- not against this folder -- and lists the dead lines of the setti
 
 ## Updating from 0.2.0
 
-- **The plugin way:** the update arrives with the new version number (`/plugin marketplace update shedkeeper` when Claude Code has not
-  fetched it yet). Nothing else to do.
+- **The plugin way:** a marketplace that is not Anthropic's does not update by itself (Claude Code keeps auto-update off for it unless you
+  turn it on: `/plugin` -> Marketplaces -> shedkeeper -> Enable auto-update). By hand: `/plugin marketplace update shedkeeper`, then
+  `/plugin update shedkeeper@shedkeeper`, then `/reload-plugins` (or start Claude Code again). Measured: after the first command alone the
+  installed version was still 0.2.0; after the second it was 0.3.0.
 - **The `install.py` way:** put the new kit folder in place of the old one, then run `python install.py install --user` (or
   `--project <dir>`, as before) once from it. It brings the entries up to date and adds none twice: the timeout 60 s -> 90 s, the tool
   matcher gains `mcp__.*`, the command of 0.2.0 (it warns only when `python` cannot be found or started, exit 126 / 127) is rewritten to the form of this version, and the fourth entry, `UserPromptSubmit` (the hook that receives the
@@ -337,10 +332,7 @@ python shedkeeper.py find report.md --days 3     # only the last days
 python shedkeeper.py restore t:2026-09-30:4      # an item from the trash (a rename back)
 python shedkeeper.py restore v:2026-09-30:7      # an earlier version of a file
 python shedkeeper.py restore t:2026-09-30:4 --to D:\somewhere\else.md
-python shedkeeper.py find shop                   # also the copies of databases (`db copy`, ids d:<day>:<n>), see "Databases"
-python shedkeeper.py restore d:2026-10-01:7      # a copy of a database: PostgreSQL into a NEW database, SQLite back as a file
-python shedkeeper.py dbcopy "<address or file>"  # a verified copy of a database now (no time or size limit of the hook)
-python shedkeeper.py status                      # where the store is, what it holds, whether the hooks are in, the databases
+python shedkeeper.py status                      # where the store is, what it holds, whether the hooks are in
 python shedkeeper.py selftest                    # run the tests
 ```
 
@@ -351,94 +343,6 @@ rename that refuses an occupied place; the verified copy then stays next to it a
 moved to the trash for the restore stays in the trash, with a line saying so). Restoring a version puts the file that is there now into the trash first,
 and only after the copy has been verified. Exit codes: `0` done, `1` refused (nothing changed), `3` done
 but not written to the index (the record is printed; do not repeat the command), `2` wrong usage.
-
-## Databases (0.3.0)
-
-The same promise as for files: **no verified copy -- no destruction.** Before a command or an MCP call destroys data in a **PostgreSQL**
-database or a **SQLite** file, ShedKeeper takes a dump of that database, reads it back in full, and only then lets the action go. If the copy
-cannot be taken, the action is refused -- with a ready command that tells the agent what to do next, so it is never stuck.
-
-What counts as destroying, how a database is named, what the hook decides in each case and why, what a copy is, and what is not seen are in
-[ARCHITECTURE.md](ARCHITECTURE.md) (sections 5.2 and 8). In short:
-
-- **Destroying:** `DROP DATABASE | SCHEMA | TABLE`, `TRUNCATE`, `DELETE` or `UPDATE` without a `WHERE`, `ALTER TABLE ... DROP COLUMN`, `dropdb`,
-  `pg_restore --clean`, and the destroying commands of tools (`prisma migrate reset`, `rails db:drop`, `supabase db reset`, `drizzle-kit push` ...), also
-  as a call of an MCP tool. A mention (`grep "DROP TABLE" f`) is not an action.
-- **An MCP tool** is destroying when a string argument starts like destroying SQL, or when its name holds `drop`, `delete`, `reset`, `truncate`, `wipe` or
-  `purge` and either the name itself names an object of a database -- `database`, `db`, `table`, `schema`, `branch`, `collection`, `index` or `bucket`, as a whole
-  word (`delete_database`, `reset_branch`, `DropTable`) -- on ANY server, or the server is a server of a database (its settings give an address, or a word of a
-  database -- `postgres`, `supabase`, `turso`, `duckdb` ... -- stands in its name, command or address). `delete_message` or `delete_file` of a chat or a file
-  server passes. The price: a tool of another kind that carries an object word (`delete_branch` of a code-hosting server) is stopped too, with the reason; the
-  setting `mcp_no_db` (the names of servers whose calls always pass) is the way out.
-- **A refusal carries the next step**, with `***` where the password is: `SHEDKEEPER_DB='<address or file>' <your command>` when the database
-  could not be named; `python "<kit>/shedkeeper.py" dbcopy '<address>'` for a database on another machine or one too big for the hook
-  (after it, repeat the command within `db_fresh_minutes`); `... dbcopy '<address>' --mcp-server NAME` for an MCP call.
-- **Another engine** (MySQL, DuckDB ...): not copied by the kit itself. The command passes with a loud warning (or is refused, with
-  `on_db_unsupported = deny`). An engine is added by an **adapter** -- a Python file in `~/.shedkeeper/adapters/` -- and it counts as protection only after
-  `python shedkeeper.py prove <engine> --target <an empty probe database>` has shown that it copies, survives a destruction and brings the data back equal.
-  The contract, a tested example (`examples/adapter_litedb.py`) and the proof gate are in [ARCHITECTURE.md](ARCHITECTURE.md), section 9.
-
-```
-python shedkeeper.py dbcopy "postgresql://user@localhost:5432/shop"   # a verified copy NOW, no time limit, no size limit
-python shedkeeper.py dbcopy C:\data\app.db                            # a SQLite file (the backup API: the write-ahead log is included)
-python shedkeeper.py dbcopy "<address>" --mcp-server NAME             # the same, for an MCP tool of the server NAME
-python shedkeeper.py find shop                                        # the copies of databases are found too (`db copy`, ids d:<day>:<n>)
-python shedkeeper.py restore d:2026-10-01:7                           # PostgreSQL: into a NEW database; SQLite: back as a file
-python shedkeeper.py restore d:2026-10-01:9 --to D:\elsewhere\app.db  # SQLite: another place
-python shedkeeper.py prove sqlite                                     # the proof gate on a probe (adapters need it; the built-in engines are proved by the tests)
-python shedkeeper.py status                                           # the section `databases`: on/off, pg_dump, limits, the budget, the copies, the adapters
-```
-
-`dbcopy` exits `0` (copy made and listed), `1` (refused or nothing to copy: no record is written), `3` (the copy is made but NOT listed; the file is named --
-the hook will not know it). **`restore` of a PostgreSQL copy never goes into an existing database:** it makes a NEW one, `<name>_restored_<YYYYMMDD_HHMMSS>`
-(`createdb` with the encoding and the locale of the original, then `pg_restore`), after asking the server that this name is free; the database that was there
-is not touched, and the tool never drops a database. **A SQLite copy** comes back as the file: the file that is there now and its `-wal`, `-shm`, `-journal` go to the
-trash of this kit first, and the copy is read back (sha256 and `PRAGMA integrity_check`) before anything is replaced. `restore` needs the password the way `pg_dump`
-does: `pgpass`, or `PGPASSWORD` in your shell. `--to` is not used for PostgreSQL.
-
-### The keys of `shedkeeper.ini` for databases
-
-| Key | Default | Meaning |
-|---|---|---|
-| `db_protection` | `true` | guard the databases at all; `false` -- they pass, and `status` says so |
-| `pg_dump_path` | empty | the `pg_dump` to use (a file or its folder); empty = look for it (PATH, then the usual places) |
-| `max_db_mb` | `200` | a database bigger than this (measured BEFORE the copy) gets no copy from the hook |
-| `db_deadline_s` | `25` | the dump and its check, all the copies of one command together; a copy that does not fit is thrown away |
-| `on_db_too_large` | `deny` | bigger / did not fit: `deny` refuses with the ready `dbcopy`; `allow` lets it pass and logs (also a copy that did not finish in time) |
-| `on_db_remote` | `deny` | a database on another machine: `deny` refuses with the ready `dbcopy`; `allow` lets it pass and logs |
-| `on_db_unsupported` | `allow` | an engine nothing here copies (or an adapter not proven / broken): `allow` passes with a warning; `deny` refuses |
-| `db_fresh_minutes` | `10` | how long a copy of `dbcopy` lets the repeated command pass |
-| `db_command` | none | one line per extra destroying command of a tool: `db_command = flyway clean`, `db_command = dotnet ef database drop \| --force` |
-| `mcp_no_db` | none | names of MCP servers that hold no database: their calls pass |
-
-A value that is not understood becomes the **safe** one and `status` names the reason. The budget of one hook run -- `cmd_deadline_s` 20 + git 10 +
-`db_deadline_s` 25 + start about 3 = 58 s -- is held against the timeout the installer sets (**90 s**) with a margin of at least 10 s; `status` checks it and says
-`TOO SMALL` when you have raised a deadline past it. An installation made by 0.2.0 has a timeout of 60 s: `python install.py install` again brings it to 90 s.
-The matcher of an installation made by 0.2.0 does not carry `mcp__.*`: the same command puts the new one back.
-
-### Limits of the databases part, declared (the full list is in ARCHITECTURE.md, section 8)
-
-- **Inside a program.** A script that destroys data on its own (`python seed.py`, `node migrate.js`) is not read: only the text of the command and of the SQL it hands over. **SQL written inside the code of a program** (`python -c "import sqlite3 ..."`, `psycopg2` in a script) is not read at all -- no copy, no refusal; what is read is the commands `sqlite3` and `psql`, the tools, and MCP calls.
-- **The verbs of the name of an MCP tool** are `drop`, `delete`, `reset`, `truncate`, `wipe`, `purge` and no others (`remove_table`, `destroy_database`, `clear_table` pass), and a verb is found inside a word (`list_deleted_tables` is stopped, with its reason).
-- **A part of an MCP call that is too big to read** (more than 400 strings, nested deeper than 8 levels, a string over 5 MB) is a doubt, judged on the strict side: if the call goes to a server of a database, or the part that was read looks like SQL, it is treated as destroying (copy, or refusal when the database cannot be named); a big harmless call to another server passes, with a line in the journal (`mcp_read_limit`).
-- **Proofs that cannot be read.** If the file of proofs of the engine adapters (`proofs.jsonl`) cannot be read whole (rights, a damaged line), whether an adapter protects is not known: a command of that engine is refused, `status` and the start of a session say so; it is not "not proven" in silence.
-- **Project code is not run.** Django `settings.py`, `drizzle.config.ts`, Rails with ERB are not read: give the address by `DATABASE_URL` or `SHEDKEEPER_DB`.
-- **A copy is of one database;** roles and other objects of the cluster are not in it.
-- **Inside a container, no copy.** `docker exec CONTAINER psql ...` (also `docker compose exec`, `docker-compose exec`, `podman exec`, and `sh -c "psql ..."` inside them) is read like the same command on this machine, but ShedKeeper cannot copy a database that lives inside a container: a destroying command there is refused, with the way on -- name the database through the port the container publishes (`SHEDKEEPER_DB=postgresql://localhost:<port>/<database>`, the copy is then taken from that address) or ask the user.
-- **Not tried here:** Docker volumes (`docker volume rm`, `docker compose down -v` are recognised by their text only), hosted projects (`supabase db reset --linked` is refused with the ready command), **MySQL and the other engines** (no adapter is shipped).
-- Naming by `SHEDKEEPER_DB` or `--mcp-server` rests on the word of the agent.
-
-## Adding another database engine
-
-The contract of the methods an adapter implements is in [ARCHITECTURE.md](ARCHITECTURE.md), section 9.3; a complete, tested example is `examples/adapter_litedb.py`.
-
-An engine is added by an **adapter**: one Python file in `~/.shedkeeper/adapters/` (an update of the kit does not touch that folder) that answers a short list of questions
--- recognise the destroying commands of the engine, name the database, measure it, copy it and read the copy back in full, bring it back into a **new** place. The
-framework does everything else (the decision, the store, the list, `dbcopy`, `find`, `restore`, `status`, the texts). An adapter is **not protection until it is proven**:
-`python shedkeeper.py prove <engine> --target <an empty probe database whose name begins with shedkeeper_probe>` fills the probe, copies it, destroys it, restores it and compares
-the rows one by one; the proof is bound to the sha256 of the file, so a changed file is "not proven" again. **A proof does not protect by itself: the PERSON makes it count** -- `prove` prints a code, the person types `CONFIRM SK-nnnnnn` in their own message, `python shedkeeper.py activate <engine>` applies it (the code is for these bytes of the file). Until then the engine is treated as one that is not supported, and a
-file that does not load is a loud line in `status` and at every session start. A complete, tested example is `examples/adapter_litedb.py`; the contract, the signatures, the proof
-gate and the properties every adapter must keep are in [ARCHITECTURE.md](ARCHITECTURE.md), section 9. MySQL is described there as an illustration of the shape and is **not tested by this kit**.
 
 ## Settings, the first look, and the words of a stop (0.3.0)
 
@@ -458,12 +362,10 @@ two readers, and each gets its own words.
 
   The block holds no order about how the agent behaves: what happened, who decides, and the ways on.
 
-Only the options that really apply are listed: a database on another machine has `dbcopy` and the key `on_db_remote`; a refused deletion has
-the trash command and **no** setting (none changes that stop); an engine that is not copied has no `dbcopy`, only "copy it with the tool of that
-engine" and the key `on_db_unsupported`. The words that were there before (the reason, the ready command after `Run:`) are kept; the
+Only the options that really apply are listed: a refused deletion has the trash command and **no** setting (none changes that stop). The words that were there before (the reason, the ready command after `Run:`) are kept; the
 block is added after them, set off by ` -- ` where the older text ended with a command, so a reader that cuts the command at ` -- `
 still gets the command. A refusal that has no special block gets a general one (the person decides; nothing is invented). The code is
-`shedkeeper/advice.py`; the tests are `t_advice_files` and `t_advice_databases`.
+`shedkeeper/advice.py`; the tests are `t_advice_files`.
 
 ### Settings, and changing them by a conversation
 
@@ -499,7 +401,7 @@ one the sentence of what stops. The action is not stopped (the copy of the ini i
 mentions the command shows nothing.
 
 **Where the settings live.** The shipped `shedkeeper.ini` of the kit is read first; then **your own** `~/.shedkeeper/shedkeeper.ini`; the later
-line wins (the lines of `mcp_no_db` and `db_command` add up). `set` writes to your own file. **A plugin update replaces the kit folder -- and the
+line wins. `set` writes to your own file. **A plugin update replaces the kit folder -- and the
 shipped ini with it -- but not your own file, so what you set survives an update** (the new defaults come through; your lines still win). With
 `install.py` the kit folder is yours, but `set` still writes to your own file, so `git pull` has nothing to overwrite. If the environment
 variable `SHEDKEEPER_INI` names a file, **only that file** is read, and `set` writes to it (this is what the tests use). `python shedkeeper.py
@@ -508,9 +410,7 @@ settings` and `status` name the files in use.
 **The weight of a setting** says how heavy a change is. It is decided by the **code** of the kit (`config.WEIGHTS`); the comments of `shedkeeper.ini` describe it for you, and a test fails when they differ -- editing or deleting a comment changes nothing. `protection`: some value of it stops protecting something -- change it only with the
 person's word, and the text says what stops. `tuning`: a limit or a place; protection stays (a wrong number may cause refusals). `notice`: only what
 you are told. **No setting is a silent switch:** every one that lets an action through without a copy says so in the message to the person and in
-the log; and **a copy that was tried and failed with an error is never let through by any setting** -- the one way past is `db_protection = false`,
-which switches the guard of databases off as a whole (and `status` shows it). One exception is named: `on_db_too_large = allow` also lets through a database copy that **did not finish in time** (the dump or its check was cut off by `db_deadline_s`) -- too slow to copy counts as too big to copy. The test `t_settings_i1` runs every key in several values over a
-failed copy of a database and of a file.
+the log; and **a copy that was tried and failed with an error is never let through by any setting** -- no setting does that. The test `t_settings_i1` runs every key in several values over a failed copy of a file.
 
 | Key | Default | Weight | What it does |
 |---|---|---|---|
@@ -521,16 +421,14 @@ failed copy of a database and of a file.
 | `on_too_large` | `deny` | protection | such a file: refuse (`deny`) or change it without a copy (`allow`, logged) |
 | `cmd_max_files` | `200` | tuning | one command may overwrite at most this many files |
 | `cmd_deadline_s` | `20` | protection | seconds the file copies of one command may take; raised past the budget of the hook, the hook can be cut off |
-| `db_protection` | `true` | protection | guard the databases at all |
-| `pg_dump_path` | empty | protection | the `pg_dump` to use (its `pg_restore` and `psql` are taken from beside it: a program that is not the real one would report copies of nothing) |
-| `max_db_mb` | `200` | tuning | the biggest database the hook copies by itself |
-| `db_deadline_s` | `25` | protection | seconds for the copies of databases of one command (same budget as above) |
-| `on_db_too_large` | `deny` | protection | a database that is too big or too slow (a copy that did not finish in time too): refuse (`deny`) or pass logged (`allow`) |
-| `on_db_remote` | `deny` | protection | a database on another machine: refuse with `dbcopy` (`deny`) or pass logged (`allow`) |
-| `on_db_unsupported` | `allow` | protection | an engine this kit does not copy: pass with one warning per project (`allow`) or refuse (`deny`) |
-| `db_fresh_minutes` | `10` | protection | how long a copy of `dbcopy` lets the repeated command pass |
-| `mcp_no_db` | none | protection | MCP servers whose calls always pass |
-| `db_command` | none | notice | more destroying commands of tools (`set` adds one rule; it never removes one) |
+| `step_budget_s` | `60` | protection | seconds the check of the protected list may take before one step (all entries and their copies); raised past what the hook may take, the hook can be cut off |
+| `walk_budget_ms` | `3000` | tuning | a walk of a tree that takes longer is an EXPENSIVE check: the survey says so and the step is refused until you choose |
+| `usn_resolve_max` | `2000` | tuning | on a volume with the change journal, more changed files than this are cheaper to find by a full walk |
+| `lock_wait_s` | `30` | tuning | how long a check waits for another check of the same project (parallel calls, sub-agents) |
+| `sqlite_busy_s` | `5` | tuning | how long the copy of a SQLite file waits for a writer that holds it |
+| `before_confirm` | `accelerators` | tuning | before you confirm the protected list: only the recognised commands (`accelerators`, default) or the candidates of the survey as a temporary list (`provisional`) |
+
+The settings for databases (`db_protection`, `pg_dump_path`, `max_db_mb`, `db_deadline_s`, `on_db_too_large`, `on_db_remote`, `on_db_unsupported`, `db_fresh_minutes`, `mcp_no_db`, `db_command`, `max_db_mb_every_step`) are in `shedkeeper.ini` for a later version and do nothing in this release.
 
 ### The first look: `survey`
 
@@ -539,14 +437,7 @@ python shedkeeper.py survey [--json] [--project PATH]     READ ONLY: what is her
 python shedkeeper.py survey --done                        only records that the survey was done for the project
 ```
 
-`survey` reads and prints: Python and its version; `pg_dump` (path and version, or why it was not found); the store of the project and the free
-space of its volume; the databases the files of the project name (the same sources the hook uses for a command: `.env`, `schema.prisma`,
-`config.toml`, `alembic.ini`, `database.yml`, Laravel) with the engine, local or remote, supported or not, and the size of a SQLite file; the MCP
-servers of your settings and **which of them count as servers of a database, and why**; the current settings; and **recommendations** --
-`{key, value, why, weight}` in plain words (a database on another machine: keep `on_db_remote = deny`; MySQL in the project: `on_db_unsupported
-= deny` is an option; `pg_dump` not found: say where it is; a SQLite file above `max_db_mb`: a bigger number). It never connects to a
-database, **never prints a password** (a database is shown only by its masked address or its engine), and writes **nothing except one line**
--- `survey_done` -- in the personal folder of the store (`guide.jsonl`). A recommendation is an offer: nothing is changed.
+`survey` reads and prints: Python and its version; the store of the project and the free space of its volume; the candidates for the protected list (the project folder); the current settings; and **recommendations** -- `{key, value, why, weight}` in plain words. It writes **nothing except one line** -- `survey_done` -- in the personal folder of the store (`guide.jsonl`). A recommendation is an offer: nothing is changed.
 
 **Offered once.** At the start of a session, if the store has no record that the survey was offered for this project (the root of its git
 repository, else the folder), the context of the agent carries one more sentence: at a natural moment, offer the user -- in their language --
@@ -617,27 +508,12 @@ This is what the code reads and keeps -- each line was checked against the code 
 
 ### What it reads
 
-- **The text of what the agent does:** the path of an Edit or Write, the text of a shell command, the arguments of an MCP tool call --
-  to see whether something would be overwritten, deleted or destroyed.
-- **The SQL files a command names** (`psql -f file.sql`, `< file.sql`, `cat file.sql | psql`): read as text, up to 5 MB, to see whether they
-  destroy data. Migrations and seeds can hold data or a password; the text of the file is not kept.
+- **The text of what the agent does:** the path of an Edit or Write, the text of a shell command -- to see whether something would be overwritten, deleted or destroyed.
 - **The programs it starts.** The hook runs `git` (to list the files a rollback would overwrite). `install.py` runs `git` (to ask whether a settings file is
-  committed or ignored) and Git Bash (the probe of `check`: it runs the registered hook command once on a harmless input). A database is copied or restored with the
-  tools of PostgreSQL (`pg_dump`, `pg_restore`, `psql`, `createdb`) or the backup API of SQLite.
+  committed or ignored) and Git Bash (the probe of `check`: it runs the registered hook command once on a harmless input). A SQLite file inside a protected folder is copied with the backup API of SQLite.
 - **Your Windows account:** the login name, the number (SID) and the full name of the account that runs the hook (`GetUserNameW`, the token of the process,
   `NetUserGetInfo`) -- to name your personal folder and to write its label `.shedkeeper-user`; `status` shows them.
 - **The file it is about to protect:** to copy it before the change.
-- **What names a database**, when a command or an MCP call would destroy data in one, and in `survey`: the environment of the hook
-  (`DATABASE_URL`, `PG*`) and the project files `.env` (`DATABASE_URL`, `DB_*`, also Laravel, and the variable that `prisma/schema.prisma` names in `env("...")` -- under any name), `prisma/schema.prisma`, `supabase/config.toml`, `alembic.ini`, Rails `config/database.yml`.
-  **A `.env` can hold a password.** ShedKeeper uses it for one thing: to connect the dump tool (`pg_dump`, `psql`) to the database the
-  command already names. The password goes to that tool in its environment, never on a command line; it is not printed, and it is not
-  written into any record -- a record is checked for it before it is written, and one that would carry it is not written and its copy is
-  dropped. `survey` shows a database only by its masked address or its engine.
-- **The settings of MCP servers:** `.mcp.json` of the project, `~/.claude.json`, and the `.mcp.json` of a plugin (found through the
-  plugin registry) -- to find out which database sits behind a server. The `args` and `env` of a server can hold an address **with a password**
-  (`postgresql://user:password@...`, `PGPASSWORD`): it is treated like the one of a `.env` -- it goes to the dump tool in its environment, never on a command
-  line, is not printed and is not written into a record.
-- **The adapters of engines:** the Python files in `~/.shedkeeper/adapters/` are not only read but RUN by the hook (ARCHITECTURE.md, section 8).
 - **Settings files:** its own `shedkeeper.ini` files, and the Claude Code settings files (`.claude/settings.json`,
   `settings.local.json`, your user `settings.json`) and plugin registry (`installed_plugins.json`, `known_marketplaces.json`) --
   `install.py` reads them to add or take out its hook entries and to say which door is open, and the hook reads a settings file when the
@@ -658,21 +534,19 @@ All of it goes into your personal folder of the store, `<X>:\_shedkeeper\<login 
 |---|---|---|
 | a file before the agent changes it | `versions\` + an index (path, time, size, sha256, how, session) | a copy of `.env` or of a key file holds what the file held |
 | an item the agent "deleted" | `trash\` + an index | moved, not copied; it keeps its own permissions |
-| a database before it is destroyed | `dbcopies\` + `dbcopies.jsonl` | **a full dump: as sensitive as the database.** The record shows the address with `***` for the password, and the command with addresses masked |
 | **the records of your conversations with the agent** | `transcripts\<project>\<session>.jsonl` | as in 0.2.0: at the start of a session the transcripts of **every session of that project** are copied whole, at its end the current one. A conversation can hold anything you or the agent typed -- a password too |
 | a line for a firing of a hook that refused, had a target or failed (a pass with nothing to do leaves none), and one per notable event | `log.jsonl` | time, tool, decision, number of targets, milliseconds; a few events name a path -- no command text, no password |
 | codes and proofs | `confirm.jsonl`, `proofs.jsonl` | the code, its key and value, the session, the time -- not your message |
 | once-only notes | `guide.jsonl` | the survey offered or done, the rule recommended, a warning about an engine given |
 | what the installer wrote | `installs.jsonl` | the settings file, the exact command, the kit folder, the time |
 
-Outside the store: your own settings and adapters in `~/.shedkeeper\`, and `settings.json.shedkeeper-backup-<time>` beside the Claude Code
+Outside the store: your own settings in `~/.shedkeeper\`, and `settings.json.shedkeeper-backup-<time>` beside the Claude Code
 settings file that `install.py` changed.
 
 ### What does not go out
 
 **Nothing is sent anywhere.** The kit has no network code of its own: it opens no connection, makes no request, reports nothing to anyone.
-The one network traffic is what the database tools make when they copy or restore: they connect to the database server that the
-command (or the record of the copy) names -- a remote one only when you run `dbcopy` yourself -- and the dump lands in the store on this machine. ShedKeeper itself sends neither the message you type nor the conversation anywhere; the transcripts are copied from one
+ShedKeeper itself sends neither the message you type nor the conversation anywhere; the transcripts are copied from one
 folder of this machine to another. But what its hooks say to the agent (the text of a refusal or a warning, a masked address, paths; the list is in "For your agent") enters the
 conversation, and the conversation goes where every conversation with Claude Code goes: to the provider of the model.
 
@@ -681,27 +555,19 @@ conversation, and the conversation goes where every conversation with Claude Cod
 Only you and the system: your personal folder is closed to the other users of the machine (details: "Where the store is" and, in "Borders", "Who can read
 the store"). Not covered: an administrator of the machine, who can take over any folder; and a trash item that keeps the permissions it had.
 The kit refuses the agent every write into the store that it recognizes (an edit, a shell write with a path it can read -- see "Risks": a program that builds the path itself is not seen); the agent can still read it with its own tools, as it can read any file that you can.
-Anyone who can read your account can read the copies -- treat the store like the files and databases it holds.
+Anyone who can read your account can read the copies -- treat the store like the files it holds.
 
 ### How to remove all of it
 
 ShedKeeper never deletes anything from the store and has no command for it; you do it, outside the agent (the hook refuses the agent the writes
 into the store that it recognizes). 1. Take ShedKeeper out: `/plugin uninstall shedkeeper@shedkeeper`, or `python install.py uninstall --user` (or
 `--project <dir>`) -- see "Moving, removing and reinstalling". 2. Delete your personal folder `<X>:\_shedkeeper\<login name>\` on every
-volume that has one (and the folder `<X>:\_shedkeeper\` when it is empty). 3. Delete `~\.shedkeeper\` (your settings and adapters) and the
+volume that has one (and the folder `<X>:\_shedkeeper\` when it is empty). 3. Delete `~\.shedkeeper\` (your settings) and the
 `settings.json.shedkeeper-backup-*` files if you do not want them. 4. Delete the kit folder, if you used `install.py`.
 
 ## Borders -- what ShedKeeper does NOT see
 
-- **Databases.** PostgreSQL and SQLite are covered (the command, the SQL it hands over, tools by their text, MCP calls); the engines
-  this kit does not copy (until an adapter is proven), the code of a project that is not run, a program that destroys on its own, roles and
-  other objects of a cluster, Docker volumes (not tried) -- see "Databases" and ARCHITECTURE.md, section 8.
-- **SQL inside the code of a program.** `python -c "import sqlite3 ..."`, `psycopg2` in a script, `node migrate.js`: the SQL is not read, so nothing is copied and nothing
-  is refused (measured on `python -c` with `sqlite3`). What is read is the commands `sqlite3` and `psql`, the destroying commands of tools, and MCP calls.
-- **The name rule of an MCP tool is a list of six verbs, and a verb is looked for as a part of a word.** The verbs are `drop`, `delete`, `reset`, `truncate`, `wipe`, `purge`:
-  `remove_table`, `destroy_database`, `clear_table`, `erase_*` pass unseen (on a server of a database too, when no SQL is in the arguments). A verb inside a longer word stops a
-  tool that only reads: `list_deleted_tables` is stopped (a false stop, with its reason; `mcp_no_db` is the way out). A verb glued to its object (`droptable`) names no object: it
-  is stopped only on a server of a database.
+- **Databases.** Not protected in this version (see the top of this file): a command or an MCP call that destroys data in a database passes unseen.
 - **Inside a program that runs.** `python script.py` that deletes or overwrites files passes: ShedKeeper
   reads the text of the command, not what a program does. Deletion or writing inside `bash -c`,
   `bash -lc`, `powershell -Command`, `cmd /c` and `python -c` text IS read; a script file is not.
@@ -799,7 +665,7 @@ volume that has one (and the folder `<X>:\_shedkeeper\` when it is empty). 3. De
 
 **ShedKeeper is a helper for your agent, not a lock.** It is built for an agent that works for you in good faith and can still make a mistake: a wrong path, a variable that expanded to something else, a command run twice. For that agent the usual ways to lose your data are closed, and a stop tells it why and what the lawful way on is. Two tasks are promised, and only these:
 
-1. **Your data does not disappear through what the agent does** -- in a project and outside it: a change keeps a copy, a deletion goes to a trash, a database action is copied first or refused.
+1. **Your data does not disappear through what the agent does** -- in a project and outside it: a change keeps a copy, a deletion goes to a trash.
 2. **The agent does not switch the protection off by the usual way**: the settings of ShedKeeper are changed with `set` and your confirmation code, and the commands that write into them (an edit, `>>`, `sed -i`, `tee`, `cp`, a python write with a literal path) are refused. The same code is asked for the ordinary ways of taking ShedKeeper itself out: an Edit or Write of a Claude Code settings file (`.claude/settings.json`, `settings.local.json`, your user `settings.json`) that takes the hooks of ShedKeeper out, switches its plugin off or sets `disableAllHooks`; `python <kit>/install.py uninstall`; `claude plugin uninstall|remove|disable shedkeeper`. An edit of those files that leaves the hooks alone (a permission, a timeout) is not stopped. You can always do any of it yourself, outside the agent.
 
 What it does **not** stop, because no list of command forms can: a deliberate way round. Among them -- a command made confusing on purpose (a quote inside a word, a mask, a name made of variables); a program that builds the path itself and writes it; **a mod of Claude Code**, which works with the rights of Claude Code, without a sandbox, and can block or rewrite the calls of the tools -- the documentation says a mod that approves tool calls can approve one that a PreToolUse hook of yours blocked, and ShedKeeper's refusal is such a hook (Anthropic's blog of 2026-10-01, https://claude.com/blog/claude-code-mods, and the documentation, https://code.claude.com/docs/en/plugins/mods/overview; both pages answered on 2026-10-02); a scheduled prompt that carries code; a settings file of Claude Code written by a shell command (`sed -i`, `jq ... > settings.json`) -- only the Edit and Write tools are read there, and the settings of Claude Code are your layer, not ShedKeeper's. When the whole of ShedKeeper is gone (its hooks taken out, its plugin off, `disableAllHooks` on), nothing of it runs and nothing tells you: `python install.py check` is the way to look. What keeps an agent from going round is that it understands what ShedKeeper is for -- which is why the kit gives the agent its facts and recommends a rule in **your** system (section "A rule for your agent"). Protection against an agent that was taught to do harm, or one that is malicious, is **cybersecurity**: ShedKeeper does not promise it and does not offer it. Everything the kit says to your agent, reads and keeps is described in "For your agent", so none of it is hidden from you.
@@ -818,10 +684,7 @@ If you are an AI agent working in a project where ShedKeeper is installed, this 
 - **Changing a file.** A copy is taken automatically, so nothing is needed. If no copy could be taken (the store is not usable, the file is too large ...), the refusal says why and names the ways on: remove the cause, or ask the user.
 - **Bringing something back.** `python "<kit folder>/shedkeeper.py" find <part of the path>` prints, for every item, the id, the time, the reason (trash), how it was changed and the session; `python "<kit folder>/shedkeeper.py" restore <id>` brings it back (the file there now goes to the trash first; `--to PATH` if the place is taken). A restore changes the person's files, so it is made with the person's word: when you noticed a loss, the lawful move is to say what was lost, when and why (from `find`) and offer to bring it back; when the person asks, to show every version that fits, with its time, and ask which one.
 - **`NOT SEARCHED: <path> -- <why>`** in the output of `find` or `restore` (exit code 2) says that a place that may hold this person's copies was not looked at (their folder under another name, a folder whose owner is not them, a SID that could not be read). "Nothing found" is then not an answer about those places; the accurate report names them and the reason.
-- **A refusal for a database** (a text that starts `shedkeeper: this command destroys data in a database ...`, `... a REMOTE database ...` or `... this call of the MCP tool ...`) holds the ready command: `dbcopy '<address>'`, or `SHEDKEEPER_DB='<address or file>' <your command>` when the database could not be named, or `dbcopy '<address>' --mcp-server NAME` for a call of an MCP tool -- then the command is repeated. The address has `***` for the password: put in your own, or rely on the user's `pgpass`. If the cause is the user's to fix (no `pg_dump`, no right), the message says so.
-- **A warning `WARNING -- ... NO COPY WAS TAKEN`** for an engine this kit does not copy means the command went through with no copy. A copy of such data is taken with the tool of that engine; ARCHITECTURE.md, section 9, is the way to have the engine covered (an adapter, then `prove`).
-- **A weakening of protection needs the person's code.** The settings of ShedKeeper can switch protection off, so a weakening is made only with the person's word: `set` for such a value prints `SK-nnnnnn`, the user types exactly `CONFIRM SK-nnnnnn` in their own message, and the same `set` is run again. The same code confirms an adapter after `prove`: `activate <engine>`. An edit of the ini that weakens protection, and a shell write into a settings file, are refused; settings change through `set`.
-- **Bringing a database back.** `find <name>` shows the copies (`db copy`); `restore d:<day>:<n>` brings one back into a NEW database (PostgreSQL; the old one is not touched, the name is printed) or as a file (SQLite). Switching an application to the new database is the person's step.
+- **A weakening of protection needs the person's code.** The settings of ShedKeeper can switch protection off, so a weakening is made only with the person's word: `set` for such a value prints `SK-nnnnnn`, the user types exactly `CONFIRM SK-nnnnnn` in their own message, and the same `set` is run again. An edit of the ini that weakens protection, and a shell write into a settings file, are refused; settings change through `set`.
 - **The store `_shedkeeper`** holds the person's copies and trash. ShedKeeper writes there; only the person cleans it, so the hook refuses writes into it (an edit, a shell write, an append) and there is no command that empties it.
 - **Removing ShedKeeper** (when the person asks; the hook stops `uninstall`, `claude plugin uninstall|disable` and an edit of the settings that takes the hooks out until the person types the code `CONFIRM SK-nnnnnn` -- the refusal says so, and the person can do it themselves outside the agent): if it came as a PLUGIN (the start message says `ShedKeeper (plugin)`), `/plugin uninstall shedkeeper@shedkeeper` -- from a terminal `claude plugin uninstall shedkeeper@shedkeeper`; there is no settings file to edit. If it was put in by `install.py`: `python "<kit folder>/install.py" uninstall --project <project folder>` (or `--user` if it was installed for the user), then the kit folder goes to the trash (`python "<kit folder>/install.py" check` says which door is open). The store `_shedkeeper` is not removed: it holds the person's copies. `uninstall` also takes out the dead lines of an earlier installation of another folder that this installer recorded (and names, leaving them, the lines it did not write).
 - **`ShedKeeper plugin files were not found: its protection is OFF`** is the same case for the plugin: the person reinstalls with `/plugin install shedkeeper@shedkeeper` or removes it with `/plugin uninstall shedkeeper@shedkeeper`; the plugin cache is not edited by hand.
@@ -835,9 +698,9 @@ Nothing here is hidden; the full account of what it reads and keeps is the secti
 - **At the start of a session** (`additionalContext`): one or two lines -- that ShedKeeper is on, the kit folder, how to find and bring back, how to remove it, and the warnings of the start (the store not usable, a hook not found, a hook timeout that differs). Then, once per project, a note that a read-only setup check exists (`survey`); once per **user**, the facts about ShedKeeper and its recommendation to the user (section "A rule for your agent"); and, while a setting weakens protection, one line saying which, the way back, and -- for one that was not made through `set` -- the mark "not through `set`".
 - **At a decision of the hook**: for a refusal, the reason, the lawful command, and the block "What happened / who decides / options"; for a pass that took a copy or no copy, a line saying so. The hook says nothing at a decision about the state of the settings.
 - **When the user types a confirmation code**: the hook of the prompt (`UserPromptSubmit`) gives one line to the agent (and the same to the person) -- the whole list of what it says: the code was **received**; it was **received before**; it is **unknown** here (no such code was issued, or its store cannot be read); it has **expired** (30 minutes); it was **already used**; it **stood in a text that is not the person's** and was ignored (a task notification, another agent, a reminder of the runtime); it **could not be recorded**, **could not be received** (the journal cannot be read) or **could not be processed** (a fault of the hook, with the fault named); and, while a code waits, that something in the message **looks like a code but is not in the form** `CONFIRM SK-nnnnnn` (nothing is counted then). A message with no code and nothing like one gets no answer.
-- **Output of the commands** (`find`, `restore`, `trash`, `set`, `settings`, `status`, `survey`, `prove`, `activate`, `dbcopy`): facts and the next command.
-- **What it reads:** the text of the commands the agent runs (to see what they would change), the files it is about to copy, the settings files, `~/.shedkeeper/shedkeeper.ini`, the transcripts of the session (to save a copy of them in the store), the SQL files a command names, and the text of the user's message at `UserPromptSubmit` (only to find a code of the form `CONFIRM SK-nnnnnn`). It does not read the file of instructions of the user's system (`CLAUDE.md` and the like) for its own needs; when you edit that file, a copy of it is taken first, as of any file.
-- **What it keeps** (in the personal folder of the store): copies of files and databases, the trash and its index, the log, the journal of confirmations (`confirm.jsonl`), the proofs of adapters (`proofs.jsonl`), the once-only notes (`guide.jsonl`: setup check offered / done, the recommendation about the rule given, a warning about an unsupported engine given), and copies of the session transcripts. No password of a connection is kept in a record (a command is kept with its addresses masked; a literal in it, such as a token in an `UPDATE`, is kept as typed).
+- **Output of the commands** (`find`, `restore`, `trash`, `set`, `settings`, `status`, `survey`): facts and the next command.
+- **What it reads:** the text of the commands the agent runs (to see what they would change), the files it is about to copy, the settings files, `~/.shedkeeper/shedkeeper.ini`, the transcripts of the session (to save a copy of them in the store), and the text of the user's message at `UserPromptSubmit` (only to find a code of the form `CONFIRM SK-nnnnnn`). It does not read the file of instructions of the user's system (`CLAUDE.md` and the like) for its own needs; when you edit that file, a copy of it is taken first, as of any file.
+- **What it keeps** (in the personal folder of the store): copies of files, the trash and its index, the log, the journal of confirmations (`confirm.jsonl`), the once-only notes (`guide.jsonl`: setup check offered / done, the recommendation about the rule given), and copies of the session transcripts. No password of a connection is kept in a record (a command is kept with its addresses masked; a literal in it, such as a token in an `UPDATE`, is kept as typed).
 
 ## A rule for your agent
 
@@ -851,7 +714,7 @@ The principles of the rule:
 
 A model wording -- **write it in your own words**, in your language, as short as you like:
 
-> ShedKeeper guards my files and databases; it is there to protect my data, also from your own mistakes. When it stops something, use the way it names (for a deletion, the trash command) or ask me -- do not look for a way round it. Switching its protection off or down is my decision, made with my confirmation code in my own message.
+> ShedKeeper guards my files; it is there to protect my data, also from your own mistakes. When it stops something, use the way it names (for a deletion, the trash command) or ask me -- do not look for a way round it. Switching its protection off or down is my decision, made with my confirmation code in my own message.
 
 ## Related tools
 

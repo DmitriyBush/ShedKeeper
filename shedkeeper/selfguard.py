@@ -27,8 +27,7 @@ PLUGIN = "shedkeeper"
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FALLBACK = re.compile(r"install\.py['\"]?\s+(?:\S+\s+)*uninstall\b|\bplugin\s+(?:uninstall|remove|disable)\s+['\"]?shedkeeper", re.I)
 
-EFFECT = ("ShedKeeper's protection would be switched OFF: no copy before an edit, no trash instead of a deletion, no copy of a database before it is "
-          "destroyed")
+EFFECT = ("ShedKeeper's protection would be switched OFF: no copy before an edit, no trash instead of a deletion")
 
 
 def _install():

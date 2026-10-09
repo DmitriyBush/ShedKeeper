@@ -18,6 +18,8 @@ How you get to a working adapter is your decision. Section 9 gives the contract 
 
 ## 1. The shape in one page
 
+> ShedKeeper 0.3.0 protects files. Databases are not protected in this version; a later version will add them. Everything below that speaks of a database, an MCP call, `dbcopy`, `prove`, `activate` or an engine adapter describes code that is built and switched off in this release (NOT SHIPPED; section 12). (`config.DATABASES_IN_THIS_RELEASE = False`: the code of the databases stays in the kit and keeps being tested; a database entry in the protected list is not checked, and `status` and the start of a session say so.)
+
 ShedKeeper is three Claude Code hooks plus a command line, in plain Python 3.9+ (standard library only, Windows in v1).
 
 - `hooks/pre_tool.py` -- **PreToolUse**. Runs before a tool call and may refuse it. It reads the *text* of the call (a path, a shell
@@ -62,6 +64,9 @@ it has. That is also the source of the limits in section 8: what the text does n
 | `shedkeeper/settings_cli.py` | `settings` (the menu), `set` (change one setting), what the hook tells the person about a change, the reminder lines |
 | `shedkeeper/confirm.py` | the confirmation code and the journal `confirm.jsonl`: issue, the person's word (`receive`, from the hook of the prompt), `gate`, the line `state`, `approved` (what the ini may make act), `quarantine` (section 7) |
 | `shedkeeper/survey.py` | the read-only first look at the machine and project; the once-only records (`guide.jsonl`) |
+| `shedkeeper/protect.py` | the LIST of what is protected (kinds D tree, S SQLite file, P local PostgreSQL, R remote PostgreSQL), its confirmation by the person (a mark in the journal of confirmations, apart from the list), the line at the start of a session |
+| `shedkeeper/signals.py` | the signals `changed / same / unknown` of an entry: the walk with a signature (size, modification time, ChangeTime), the change journal read without administrator rights, the signature of a SQLite file and its -wal, the counters and sessions of a PostgreSQL database |
+| `shedkeeper/guard.py` | the check before every step: lock, signal, verified copy, then (only then) the base of the signal and the manifest of the step; `snapshot`, `restore --step N`, `find --steps` |
 | `examples/adapter_litedb.py` | a complete adapter that runs for real (a file engine that is SQLite inside); the tests load it |
 | `tests/run_tests.py` | the tests (section 11); `python shedkeeper.py selftest` runs them |
 | `SECURITY.md`, `CHANGELOG.md` | how to report a vulnerability and what counts as one; what changed in each version |
@@ -105,9 +110,10 @@ In this order, each stage able to refuse:
 4. **Databases** (section 5.2): the destroying actions are recognised, the databases named, **every refusal comes before any copy** (so a
    command that overwrites a file and destroys a database gets both copies or is refused), then the copies are taken.
 
-### 3.3 MCP tools (`mcp__*`)
+### 3.3 MCP tools (`mcp__*`) -- NOT SHIPPED in this release (databases, section 12)
 
-The matcher of the hook carries `mcp__.*`, so every MCP tool reaches it; one that destroys no database passes unseen. A call destroys when
+The matcher of the hook is `.*`: every tool reaches it, an MCP tool among them (the closed list of the tools that only read, `config.READ_ONLY_TOOLS`, is cut by the hook itself, and every other tool is checked
+by the protected list); an MCP tool that destroys no database passes unseen. A call destroys when
 a string argument *starts like* SQL of the destroying class (so the chat message "please delete from my list" is not read as SQL), or the tool
 name holds `drop`, `delete`, `reset`, `truncate`, `wipe` or `purge` **and** either the tool name itself names an object of a database **or** the server is
 a server of a database. The database behind the server is read from the *settings of the server* (`.mcp.json`, `~/.claude.json`, a plugin's `.mcp.json`, by
@@ -175,7 +181,7 @@ Facts that decide behaviour:
 - A volume that is removable or a network drive gets no store; every change to an existing file there is refused (nowhere to put the copy),
   unless a person adopts a folder there (`adopt X:`).
 
-### 4.1 The record of a copy of a database (`dbcopies.jsonl`)
+### 4.1 The record of a copy of a database (`dbcopies.jsonl`) -- NOT SHIPPED in this release (section 12)
 
 `id`, `engine`, `identity` (section 5.2, one string per database, no password), `name`, `url` (the address **with `***` where the password was**,
 or the file path), `size` (of the database), `copy` (path), `copy_size`, `sha256`, `verified` (how it was read back), `command` (the command that
@@ -204,7 +210,7 @@ the connection in it** (`db._leak`); a record that would carry one is not writte
 A copy of a file that is "the same" as the previous copy is skipped only when the previous copy, **read at that moment**, still has the
 file's content -- a damaged or shortened copy is not trusted.
 
-### 5.2 Databases
+### 5.2 Databases -- NOT SHIPPED in this release (section 12)
 
 **What counts as destroying.** SQL, read *outside comments and string literals*, each statement of a `;` list on its own: `DROP DATABASE |
 SCHEMA | TABLE | OWNED`, `TRUNCATE`, `DELETE` and `UPDATE` without a `WHERE`, `ALTER TABLE ... DROP COLUMN`, `ALTER TABLE ... ALTER COLUMN ... TYPE`.
@@ -404,6 +410,22 @@ a program that builds the path, a mod of Claude Code, a scheduled prompt that ca
   nothing is offered when it cannot be written). If the start of a session does not reach the agent -- a headless first start, or an output the runtime cut at its ceiling of 10 000 characters --
   the note is not repeated. Cost: the person misses a one-time suggestion (the setup check, the recommendation about the rule); nothing is unprotected by it. It is taken on purpose: a note that could not
   be remembered would come at every start. The way back is to run `python shedkeeper.py survey` by hand, and to put the rule of section 7 into the file of instructions.
+- **Limits of the protected list on files (the second correction of 0.3.0).** Each is named with what it costs and when it stops:
+  - **A list confirmed by a build before 0.3.0 has no second witness.** The mark of such a list does not hold the shape of the confirmed entries, and the list does not say in itself that it
+    was confirmed. With the journal of confirmations removed or garbled it reads as a draft (no check), and an exclusion added or a target changed by hand is not noticed. It gets the witness at the
+    next confirmation (`protect confirm`). Cost: the guard of such a list is the guard of the earlier build until then; the builds that wrote such lists are workshop builds, and 0.1.0 and 0.2.0 were closed repositories, so no outside user has one.
+  - **The folder of a list removed by a command the kit does not recognise.** The folder `protect/<key>` of the store is the sign that makes the hook look at a list. A recognised `rm` into the
+    store is refused, but a folder removed by a program the kit does not read (a script, a tool of another kind) is no list for the hook, and the mark that stays in the journal of confirmations is
+    not consulted for it. Cost: the guard of that project is off until the list is made again; it was so before this correction and was not measured.
+  - **A list under the folder of the step is found through the name of its project.** The list holds the folder of its project (`project` in `protected.json`); a list file that is damaged or names
+    none cannot be told to stand under a folder, and a step in the folder above it does not see it. The step in the project's own folder does. **Limit (pre-existing, not changed by order 12):** a list
+    file under the folder that cannot be parsed, or that is gone while the journal says it was confirmed, names no project and is NOT seen from a folder above it; steps from there are checked as if
+    that list were not there. The way out today: open the session in that project's folder.
+  - **A BROKEN list under the folder of the step refuses every step that the guard checks (order 12, v6, variant A).** A broken list of the step's own folder or of a folder above it refuses every step, and so does a broken list found UNDER the folder of the step (or under the folder of the session, `CLAUDE_PROJECT_DIR`): an edit tool, the shell, PowerShell, an MCP tool, every tool but the readers and the control tools. Order 11 let an edit through when its path was proven to lie outside the project of the list; order 12 took that back, because a list may guard trees OUTSIDE its project (`protect.make_entry`) and a broken list does not tell its targets (the mark keeps only hashes), so no step can be proven not to reach what it guards. The refusal names the project of the list, says where the list was found (under the folder of the step, or of the session), and gives two ways out: repair the list (or rebuild it with `protect add ...`, which needs your code), or open the session in the folder of the project you work on (then that list is not under the folder of the step). Cost: a session opened in a folder over several projects is stopped by one broken list among them.
+  - **Reparse points of other kinds that the system will not open.** A symbolic link of WSL (tag `0xA000001D`), a file-socket `AF_UNIX` (`0x80000023`) are taken for ordinary files like a cloud
+    placeholder; the copy of one that cannot be opened refuses the step until the file is excluded (`protect exclude`). Not measured: the machine of the authors has none.
+  - **A folder that moves inside a root named through a link, when the system gives no final path of the root.** The root is then compared as written and the fall is said (`degraded:`), but a
+    moved folder may be misread as one that left the root until the next full walk.
 - **Windows only** in v1: drive letters, junctions, volume types, the security descriptors of the store.
 - An administrator of the machine can take over any folder, the store included.
 - **An adapter of a user runs inside the hook process.** A file in the adapters folder is executed, with the rights of the hook, at every hook run. The proof gate shows that an adapter *can* round-trip data; it does not show that
@@ -411,7 +433,7 @@ a program that builds the path, a mod of Claude Code, a scheduled prompt that ca
 
 ---
 
-## 9. Adding an engine: the engine adapter
+## 9. Adding an engine: the engine adapter -- NOT SHIPPED in this release (section 12)
 
 ### 9.1 What an adapter is
 
@@ -581,5 +603,103 @@ of a stand, no password; `PGPASSFILE` for the password) and make and remove thei
 | 48 mutations | the guards of group 47 broken in memory |
 | 49 the second pass over the face | a server of an MCP tool named by a product of an engine the kit does not copy (no address) is `Unsupported`, a warning, not a refusal that asks for an impossible `dbcopy`; `PGSERVICE` / `PGSERVICEFILE` without a host in the command is "the connection comes from a service file"; the example adapter's restore does not overwrite a file that appeared in the last moment; the old rule of the name in no docstring, no BOM; and the mutations of the three |
 
+**The groups 31-49 test the code of the databases, which is switched off in this release** (`config.DATABASES_IN_THIS_RELEASE = False`): each of their tests runs with that name put to `True` (in the test's own process, and
+in every Python process it starts), so the code of the next version does not rot; no assertion of them was weakened. What the release itself promises -- the databases do nothing, the documents say so -- is
+proved by the groups 55-60 (60 breaks every gate of the release in memory and requires the tests to go red).
+
 The mutation groups are the answer to "do the tests test anything": for every guarded place a test breaks it *in memory* and requires its guarding test to go red.
 A mutation whose guarding test cannot be measured is `NOT MEASURED`, never `CAUGHT`.
+
+---
+
+## 12. Not in this release: databases
+
+**ShedKeeper 0.3.0 protects files. Databases are not protected in this version; a later version will add them.** This section is the former user-facing text about databases, moved here from the README. It is NOT SHIPPED: the code exists in the kit and its tests run with `config.DATABASES_IN_THIS_RELEASE` set to True, but in this release the hook, the command line, the survey and the start of a session do nothing about a database (`DB_OFF_TEXT`: "Database protection is built and under review; it is not part of this release. Files are protected."). It is the base of a later version and will be rewritten when that version is decided.
+
+### 12.1 Databases (what the build does; switched off)
+
+The same promise as for files: **no verified copy -- no destruction.** Before a command or an MCP call destroys data in a **PostgreSQL**
+database or a **SQLite** file, ShedKeeper takes a dump of that database, reads it back in full, and only then lets the action go. If the copy
+cannot be taken, the action is refused -- with a ready command that tells the agent what to do next, so it is never stuck.
+
+What counts as destroying, how a database is named, what the hook decides in each case and why, what a copy is, and what is not seen are in
+[ARCHITECTURE.md](ARCHITECTURE.md) (sections 5.2 and 8). In short:
+
+- **Destroying:** `DROP DATABASE | SCHEMA | TABLE`, `TRUNCATE`, `DELETE` or `UPDATE` without a `WHERE`, `ALTER TABLE ... DROP COLUMN`, `dropdb`,
+  `pg_restore --clean`, and the destroying commands of tools (`prisma migrate reset`, `rails db:drop`, `supabase db reset`, `drizzle-kit push` ...), also
+  as a call of an MCP tool. A mention (`grep "DROP TABLE" f`) is not an action.
+- **An MCP tool** is destroying when a string argument starts like destroying SQL, or when its name holds `drop`, `delete`, `reset`, `truncate`, `wipe` or
+  `purge` and either the name itself names an object of a database -- `database`, `db`, `table`, `schema`, `branch`, `collection`, `index` or `bucket`, as a whole
+  word (`delete_database`, `reset_branch`, `DropTable`) -- on ANY server, or the server is a server of a database (its settings give an address, or a word of a
+  database -- `postgres`, `supabase`, `turso`, `duckdb` ... -- stands in its name, command or address). `delete_message` or `delete_file` of a chat or a file
+  server passes. The price: a tool of another kind that carries an object word (`delete_branch` of a code-hosting server) is stopped too, with the reason; the
+  setting `mcp_no_db` (the names of servers whose calls always pass) is the way out.
+- **A refusal carries the next step**, with `***` where the password is: `SHEDKEEPER_DB='<address or file>' <your command>` when the database
+  could not be named; `python "<kit>/shedkeeper.py" dbcopy '<address>'` for a database on another machine or one too big for the hook
+  (after it, repeat the command within `db_fresh_minutes`); `... dbcopy '<address>' --mcp-server NAME` for an MCP call.
+- **Another engine** (MySQL, DuckDB ...): not copied by the kit itself. The command passes with a loud warning (or is refused, with
+  `on_db_unsupported = deny`). An engine is added by an **adapter** -- a Python file in `~/.shedkeeper/adapters/` -- and it counts as protection only after
+  `python shedkeeper.py prove <engine> --target <an empty probe database>` has shown that it copies, survives a destruction and brings the data back equal.
+  The contract, a tested example (`examples/adapter_litedb.py`) and the proof gate are in [ARCHITECTURE.md](ARCHITECTURE.md), section 9.
+
+```
+python shedkeeper.py dbcopy "postgresql://user@localhost:5432/shop"   # a verified copy NOW, no time limit, no size limit
+python shedkeeper.py dbcopy C:\data\app.db                            # a SQLite file (the backup API: the write-ahead log is included)
+python shedkeeper.py dbcopy "<address>" --mcp-server NAME             # the same, for an MCP tool of the server NAME
+python shedkeeper.py find shop                                        # the copies of databases are found too (`db copy`, ids d:<day>:<n>)
+python shedkeeper.py restore d:2026-10-01:7                           # PostgreSQL: into a NEW database; SQLite: back as a file
+python shedkeeper.py restore d:2026-10-01:9 --to D:\elsewhere\app.db  # SQLite: another place
+python shedkeeper.py prove sqlite                                     # the proof gate on a probe (adapters need it; the built-in engines are proved by the tests)
+python shedkeeper.py status                                           # the section `databases`: on/off, pg_dump, limits, the budget, the copies, the adapters
+```
+
+`dbcopy` exits `0` (copy made and listed), `1` (refused or nothing to copy: no record is written), `3` (the copy is made but NOT listed; the file is named --
+the hook will not know it). **`restore` of a PostgreSQL copy never goes into an existing database:** it makes a NEW one, `<name>_restored_<YYYYMMDD_HHMMSS>`
+(`createdb` with the encoding and the locale of the original, then `pg_restore`), after asking the server that this name is free; the database that was there
+is not touched, and the tool never drops a database. **A SQLite copy** comes back as the file: the file that is there now and its `-wal`, `-shm`, `-journal` go to the
+trash of this kit first, and the copy is read back (sha256 and `PRAGMA integrity_check`) before anything is replaced. `restore` needs the password the way `pg_dump`
+does: `pgpass`, or `PGPASSWORD` in your shell. `--to` is not used for PostgreSQL.
+
+#### The keys of `shedkeeper.ini` for databases
+
+| Key | Default | Meaning |
+|---|---|---|
+| `db_protection` | `true` | guard the databases at all; `false` -- they pass, and `status` says so |
+| `pg_dump_path` | empty | the `pg_dump` to use (a file or its folder); empty = look for it (PATH, then the usual places) |
+| `max_db_mb` | `200` | a database bigger than this (measured BEFORE the copy) gets no copy from the hook |
+| `db_deadline_s` | `25` | the dump and its check, all the copies of one command together; a copy that does not fit is thrown away |
+| `on_db_too_large` | `deny` | bigger / did not fit: `deny` refuses with the ready `dbcopy`; `allow` lets it pass and logs (also a copy that did not finish in time) |
+| `on_db_remote` | `deny` | a database on another machine: `deny` refuses with the ready `dbcopy`; `allow` lets it pass and logs |
+| `on_db_unsupported` | `allow` | an engine nothing here copies (or an adapter not proven / broken): `allow` passes with a warning; `deny` refuses |
+| `db_fresh_minutes` | `10` | how long a copy of `dbcopy` lets the repeated command pass |
+| `db_command` | none | one line per extra destroying command of a tool: `db_command = flyway clean`, `db_command = dotnet ef database drop \| --force` |
+| `mcp_no_db` | none | names of MCP servers that hold no database: their calls pass |
+
+A value that is not understood becomes the **safe** one and `status` names the reason. The budget of one hook run -- `cmd_deadline_s` 20 + git 10 +
+`db_deadline_s` 25 + start about 3 = 58 s -- is held against the timeout the installer sets (**90 s**) with a margin of at least 10 s; `status` checks it and says
+`TOO SMALL` when you have raised a deadline past it. An installation made by 0.2.0 has a timeout of 60 s: `python install.py install` again brings it to 90 s.
+The matcher of an installation made by 0.2.0 does not carry `mcp__.*`: the same command puts the new one back.
+
+#### Limits of the databases part, declared (the full list is in ARCHITECTURE.md, section 8)
+
+- **Inside a program.** A script that destroys data on its own (`python seed.py`, `node migrate.js`) is not read: only the text of the command and of the SQL it hands over. **SQL written inside the code of a program** (`python -c "import sqlite3 ..."`, `psycopg2` in a script) is not read at all -- no copy, no refusal; what is read is the commands `sqlite3` and `psql`, the tools, and MCP calls.
+- **The verbs of the name of an MCP tool** are `drop`, `delete`, `reset`, `truncate`, `wipe`, `purge` and no others (`remove_table`, `destroy_database`, `clear_table` pass), and a verb is found inside a word (`list_deleted_tables` is stopped, with its reason).
+- **A part of an MCP call that is too big to read** (more than 400 strings, nested deeper than 8 levels, a string over 5 MB) is a doubt, judged on the strict side: if the call goes to a server of a database, or the part that was read looks like SQL, it is treated as destroying (copy, or refusal when the database cannot be named); a big harmless call to another server passes, with a line in the journal (`mcp_read_limit`).
+- **Proofs that cannot be read.** If the file of proofs of the engine adapters (`proofs.jsonl`) cannot be read whole (rights, a damaged line), whether an adapter protects is not known: a command of that engine is refused, `status` and the start of a session say so; it is not "not proven" in silence.
+- **Project code is not run.** Django `settings.py`, `drizzle.config.ts`, Rails with ERB are not read: give the address by `DATABASE_URL` or `SHEDKEEPER_DB`.
+- **A copy is of one database;** roles and other objects of the cluster are not in it.
+- **Inside a container, no copy.** `docker exec CONTAINER psql ...` (also `docker compose exec`, `docker-compose exec`, `podman exec`, and `sh -c "psql ..."` inside them) is read like the same command on this machine, but ShedKeeper cannot copy a database that lives inside a container: a destroying command there is refused, with the way on -- name the database through the port the container publishes (`SHEDKEEPER_DB=postgresql://localhost:<port>/<database>`, the copy is then taken from that address) or ask the user.
+- **Not tried here:** Docker volumes (`docker volume rm`, `docker compose down -v` are recognised by their text only), hosted projects (`supabase db reset --linked` is refused with the ready command), **MySQL and the other engines** (no adapter is shipped).
+- Naming by `SHEDKEEPER_DB` or `--mcp-server` rests on the word of the agent.
+
+### 12.2 Adding another database engine (switched off)
+
+The contract of the methods an adapter implements is in [ARCHITECTURE.md](ARCHITECTURE.md), section 9.3; a complete, tested example is `examples/adapter_litedb.py`.
+
+An engine is added by an **adapter**: one Python file in `~/.shedkeeper/adapters/` (an update of the kit does not touch that folder) that answers a short list of questions
+-- recognise the destroying commands of the engine, name the database, measure it, copy it and read the copy back in full, bring it back into a **new** place. The
+framework does everything else (the decision, the store, the list, `dbcopy`, `find`, `restore`, `status`, the texts). An adapter is **not protection until it is proven**:
+`python shedkeeper.py prove <engine> --target <an empty probe database whose name begins with shedkeeper_probe>` fills the probe, copies it, destroys it, restores it and compares
+the rows one by one; the proof is bound to the sha256 of the file, so a changed file is "not proven" again. **A proof does not protect by itself: the PERSON makes it count** -- `prove` prints a code, the person types `CONFIRM SK-nnnnnn` in their own message, `python shedkeeper.py activate <engine>` applies it (the code is for these bytes of the file). Until then the engine is treated as one that is not supported, and a
+file that does not load is a loud line in `status` and at every session start. A complete, tested example is `examples/adapter_litedb.py`; the contract, the signatures, the proof
+gate and the properties every adapter must keep are in [ARCHITECTURE.md](ARCHITECTURE.md), section 9. MySQL is described there as an illustration of the shape and is **not tested by this kit**.

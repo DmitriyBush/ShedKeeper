@@ -353,7 +353,7 @@ def quarantine(settings, cwd=None):
         lines.append("%s: %d damaged line(s) moved to %s.bad; %d code(s) closed (ask the user for a NEW code)" % (path, len(damaged), FILE, n_closed))
     try:
         from . import engines
-        lines += engines.quarantine_proofs(roots)
+        lines += [] if not config.DATABASES_IN_THIS_RELEASE else engines.quarantine_proofs(roots)        # a release without databases has no proofs of adapters to look at
     except Exception as e:
         lines.append("the proofs of the adapters could not be looked at (%s: %s)" % (e.__class__.__name__, e))
         bad_any = True

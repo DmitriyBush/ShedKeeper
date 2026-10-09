@@ -67,6 +67,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -78,12 +79,16 @@ EDIT_FIELDS = {"Edit": "file_path", "Write": "file_path", "NotebookEdit": "noteb
 CMD_TOOLS = ("Bash", "PowerShell")
 GIT_TIMEOUT_S = 5       # one git call
 GIT_TOTAL_S = 10        # all git calls of one hook run together (so the installed timeout has a budget)
+WATCHDOG_MARGIN_S = 8   # the watchdog answers this long before the timeout the hook is installed with (shedkeeper/config.py HOOK_TIMEOUT_S, one number for the whole kit)
+WATCHDOG_S = None       # None: HOOK_TIMEOUT_S - WATCHDOG_MARGIN_S (a test sets a number)
+_ANSWER = {"lock": threading.Lock(), "done": False}
 MAX_OUT = 9500          # the runtime cuts the output of a hook at 10000 characters and then reads no JSON: the answer stays under this
 PATH_BUDGET = 2400      # the characters (as written in the JSON) a list of paths may take in ONE place of a refusal
 # the raw bytes of an input that could not be decoded: does it name a tool we guard?
 GUARDED_RAW = re.compile(rb'"tool_name"\s*:\s*"(?:Edit|Write|NotebookEdit|MultiEdit|Bash|PowerShell)"')
 # the raw bytes of an input that could not be decoded, naming an MCP tool with a destroying word in the tool name or the text
 GUARDED_RAW_MCP = re.compile(rb'"tool_name"\s*:\s*"mcp__', re.I)
+TOOL_NAME_RAW = re.compile(rb'"tool_name"\s*:\s*"([^"\\]*)"')      # the tool name in input that cannot be parsed as a whole
 ROUGH_MCP = re.compile(r"(?:drop|delete|reset|truncate|wipe|purge|alter|update)", re.I)
 # a ROUGH sign that a command destroys or overwrites something -- used only when the recognizers fail
 ROUGH = re.compile(
@@ -103,12 +108,23 @@ def _fwd(p):
     return os.path.abspath(p).replace("\\", "/")
 
 
+def _databases_in_release():
+    """False in a release without databases (`config.DATABASES_IN_THIS_RELEASE`); True when the settings module cannot be read (a fault is judged on the strict side)."""
+    try:
+        from shedkeeper import config
+        return bool(config.DATABASES_IN_THIS_RELEASE)
+    except Exception:
+        return True
+
+
 def _rough_extra(command):
     """The first words of the destroying commands the PERSON added (`db_command` of the settings) and the command names of the adapters of the
     user: the static ROUGH list cannot know them, and the fallback must not pass what the readers would have stopped. Never raises; when it cannot tell
     (the settings or the adapters cannot be loaded) it says True -- it runs after the readers failed, and a command it cannot judge is not passed."""
     try:
         from shedkeeper import config, engines
+        if not config.DATABASES_IN_THIS_RELEASE:        # a release without databases: the words added for databases and the adapters of the user are not loaded
+            return False
         words = []
         settings, _problems = config.load(integrity=False)
         for line in settings.get("db_command") or ():
@@ -472,6 +488,9 @@ def _roots_for(cwd, settings, store):
 def _db_plan(command, cwd, shell, settings, store, state):
     """The plan for the databases a command destroys (shedkeeper/db.py), or None: nothing to do (no such action, or
     db_protection = off). Marks the command as recognized: a fault after this point is a refusal."""
+    from shedkeeper import config
+    if not config.DATABASES_IN_THIS_RELEASE:      # a release without databases: no command is read for a database, nothing is copied or stopped, no database tool is called
+        return None
     if not settings.get("db_protection", True):
         return None
     from shedkeeper import db
@@ -486,7 +505,8 @@ def _db_plan(command, cwd, shell, settings, store, state):
 
 def _decide_mcp(data, tool, tool_input, cwd, session, settings, store, state):
     """A call of an MCP tool: the same decision as for a command, over the database behind the server."""
-    if not settings.get("db_protection", True):
+    from shedkeeper import config
+    if not config.DATABASES_IN_THIS_RELEASE or not settings.get("db_protection", True):      # a release without databases: an MCP call is not read for a database
         return "allow", "", {"targets": 0}
     from shedkeeper import db, dbmcp
     cwd = cwd or os.getcwd()
@@ -713,16 +733,95 @@ def _decide_cmd(tool, tool_input, cwd, session, settings, store, recognize, stat
                                  **({"unsupported": _dbmeta["unsupported"]} if dbitems and _dbmeta.get("unsupported") else {}))
 
 
+def _guard_first(data, state):
+    """The CHECK of the protected list (shedkeeper/guard.py) comes first, for every tool that is not in the closed list of readers: a refusal -> (decision, text, meta);
+    a pass -> None (what the check copied is in `state["guard"]`, a note for the person in `state["notice"]`). An exception of the check is a refusal for every such tool (it
+    has no way to tell whether a list was meant to be checked)."""
+    tool = data.get("tool_name")
+    try:
+        from shedkeeper import config, guard
+        if isinstance(tool, str) and (tool in guard.READ_ONLY_TOOLS or tool in guard.CONTROL_TOOLS):
+            return None
+        settings, _problems = config.load(integrity=False)
+        g = guard.check(data, settings)
+    except Exception as e:
+        err = "%s: %s" % (e.__class__.__name__, e)
+        try:
+            from shedkeeper import db as _db
+            err = _db.mask_secrets(err)
+        except Exception:
+            pass
+        return "deny", ("shedkeeper: the check of the protected list failed before this step (%s), so no copy can be trusted. Refused. (To remove the hook: python install.py "
+                        "uninstall.)" % err) + " " + _safe_block(
+            "ShedKeeper itself failed while checking the protected list before this step (%s), so it stopped the step to keep your data safe" % err,
+            agent="run `python %s status` to see what is wrong" % _q(_fwd(os.path.join(KIT, "shedkeeper.py")), "bash"),
+            user="repair or remove ShedKeeper (python install.py uninstall) if the fault stays"), {"error": err}
+    if g is None:
+        return None
+    if g["decision"] == "deny":
+        return "deny", g["text"], g.get("meta", {})
+    state["guard"] = g
+    _add_notice(state, g.get("notice") or "")
+    if g.get("created") and not state.get("created"):
+        state["created"] = g["created"]
+    return None
+
+
+def _watchdog_s():
+    """The second at which the watchdog answers for the hook (a test sets WATCHDOG_S): the check and the accelerators must be done before it, not before the timeout of the hook."""
+    from shedkeeper import config
+    return float(WATCHDOG_S) if WATCHDOG_S is not None else float(config.HOOK_TIMEOUT_S - WATCHDOG_MARGIN_S)
+
+
+def _accel_settings(state):
+    """The settings the accelerators work with: when the check before the step took time, the budgets of the copies they make are cut so that the two together stay inside the
+    time of the WATCHDOG (a hook that times out lets the step through unprotected, and the watchdog answers before the timeout: a copy still running then is refused, with words that
+    do not fit)."""
+    from shedkeeper import config
+    settings, _problems = config.load(integrity=False)
+    g = state.get("guard")
+    if g:
+        elapsed = float(g.get("meta", {}).get("guard_ms", 0)) / 1000.0
+        left = _watchdog_s() - elapsed - 2
+        from shedkeeper import db
+        if db.budget_s(settings) > left:
+            avail = left - (db.budget_s(settings) - settings["cmd_deadline_s"] - settings["db_deadline_s"])      # what is left for the two copy budgets (git and the start are fixed)
+            settings = dict(settings)
+            settings["cmd_deadline_s"] = max(1, min(settings["cmd_deadline_s"], int(avail * 0.4))) if avail > 2 else 1
+            settings["db_deadline_s"] = max(1, min(settings["db_deadline_s"], int(avail - settings["cmd_deadline_s"]))) if avail > 2 else 1
+    return settings
+
+
 def decide(data, state=None):
-    """(decision, text, meta) for one hook input; decision is 'allow' | 'deny' | 'context'."""
+    """(decision, text, meta) for one hook input; decision is 'allow' | 'deny' | 'context'. The check of the protected list first, then the accelerators."""
     state = state if state is not None else {}
+    refused = _guard_first(data, state)
+    if refused is not None:
+        return refused
+    decision, text, meta = _decide_accel(data, state)
+    g = state.get("guard")
+    if g:
+        meta = dict(meta)
+        gm = g.get("meta", {})
+        meta["targets"] = meta.get("targets", 0) + int(gm.get("guard_copied", 0))
+        for k in ("guard_ms", "guard_step", "guard_notes"):
+            if gm.get(k) is not None:
+                meta[k] = gm[k]
+        if gm.get("root") and not meta.get("root"):
+            meta["root"] = gm["root"]
+    return decision, text, meta
+
+
+def _decide_accel(data, state):
+    """The accelerators (0.3.0 recognisers): a copy before an edit outside the list, the trash instead of a deletion, a stop for a destroying command to a database that is not
+    in the list. None of them is a condition of the safety of an entry of the list (the check before the step does not look at the command)."""
     from shedkeeper import config, recognize, store
     tool = data.get("tool_name")
     if isinstance(tool, str) and tool.startswith("mcp__"):
         ti = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
         sid = data.get("session_id") if isinstance(data.get("session_id"), str) else ""
         wd = data.get("cwd") if isinstance(data.get("cwd"), str) else ""
-        settings, _problems = config.load(integrity=False)
+        settings = _accel_settings(state)
         state["settings"] = settings
         return _decide_mcp(data, tool, ti, wd, sid, settings, store, state)
     if not isinstance(tool, str) or (tool not in EDIT_FIELDS and tool not in CMD_TOOLS):
@@ -731,7 +830,7 @@ def decide(data, state=None):
     tool_input = tool_input if isinstance(tool_input, dict) else {}
     session = data.get("session_id") if isinstance(data.get("session_id"), str) else ""
     cwd = data.get("cwd") if isinstance(data.get("cwd"), str) else ""
-    settings, _problems = config.load(integrity=False)
+    settings = _accel_settings(state)
     state["settings"] = settings
     if tool in EDIT_FIELDS:
         return _decide_edit(tool, tool_input, cwd, session, settings, store, state)
@@ -822,6 +921,49 @@ def _emit(decision, text, message=""):
     sys.stdout.flush()
 
 
+def _claim_answer():
+    """True for the one who may write the answer (the main flow or the watchdog), False for the other."""
+    with _ANSWER["lock"]:
+        if _ANSWER["done"]:
+            return False
+        _ANSWER["done"] = True
+        return True
+
+
+def _watchdog_fire(data):
+    """The hook is near its own time limit and has not answered. A hook the runtime cuts off lets the step through UNPROTECTED, so the answer is given HERE: a refusal (a tool that only
+    reads is let through, silently), and the process ends at once. No import, no store: only what is already in memory."""
+    if not _claim_answer():
+        return
+    try:
+        tool = data.get("tool_name") if isinstance(data, dict) else None
+        reads = False
+        try:
+            from shedkeeper import config
+            reads = isinstance(tool, str) and (tool in config.READ_ONLY_TOOLS or tool in config.CONTROL_TOOLS)
+        except Exception:
+            pass
+        if not reads:
+            text = ("shedkeeper: the check before this step did not finish inside the time the hook has, so no copy can be trusted. The step is refused. "
+                    "Tell the person: the check is too slow here (a big folder, a busy disk, a database that does not answer). They take the copy themselves in their own terminal "
+                    "(`python %s snapshot`), then you try the step again." % _fwd(os.path.join(KIT, "shedkeeper.py")))
+            sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": text}}, ensure_ascii=True))
+        sys.stdout.flush()
+    finally:
+        os._exit(0)
+
+
+def _start_watchdog(data):
+    try:
+        seconds = _watchdog_s()
+        t = threading.Timer(max(0.5, float(seconds)), _watchdog_fire, args=(data,))
+        t.daemon = True
+        t.start()
+        return t
+    except Exception:
+        return None
+
+
 def _read_input():
     """The raw bytes of stdin. (A test may hand a text stream without .buffer.)"""
     buf = getattr(sys.stdin, "buffer", None)
@@ -843,13 +985,25 @@ def _yields_to_install(data):
         return False
 
 
+def _pass_tools():
+    """The tools the kit lets through without a check: the readers and the tools that stop a process or ask the person. () when the lists cannot be had (then nothing passes)."""
+    try:
+        from shedkeeper import config
+        return tuple(config.READ_ONLY_TOOLS) + tuple(config.CONTROL_TOOLS)
+    except Exception:
+        return ()
+
+
 def _guarded_input(data, raw):
-    """Is this input one of a tool the kit guards (or one that cannot be told)? `data`: the parsed input or None; `raw`: the bytes or None. Not known -> True."""
+    """Is this input one of a tool the kit guards? Every tool that is not a reader and not a control tool is (the check before a step looks at every one of them, also one that does not
+    exist yet), so a fault of the hook refuses it. `data`: the parsed input or None; `raw`: the bytes or None. Not known -> True."""
+    passed = _pass_tools()
     if isinstance(data, dict):
         tool = data.get("tool_name")
-        return isinstance(tool, str) and (tool in EDIT_FIELDS or tool in CMD_TOOLS or tool.startswith("mcp__"))
+        return not (isinstance(tool, str) and tool in passed)
     if isinstance(raw, (bytes, bytearray)):
-        return bool(GUARDED_RAW.search(raw) or GUARDED_RAW_MCP.search(raw))
+        m = TOOL_NAME_RAW.search(raw)
+        return not (m and m.group(1).decode("utf-8", "replace") in passed)
     return True
 
 
@@ -879,21 +1033,29 @@ def _fail_closed(data, raw, exc):
     return 2
 
 
-def main():
-    holder = {}
+def main(watchdog=False):
+    """`watchdog=True` only for the hook the runtime starts as a script (the last lines of this file): a process that merely IMPORTS this module (the tests) must never be ended by a timer."""
+    holder = {"watchdog_on": watchdog}
     try:
         return _main(holder)
     except Exception as e:          # (Exception, not BaseException: an exit or an interrupt is not a fault of ours)
         return _fail_closed(holder.get("data"), holder.get("raw"), e)
+    finally:
+        w = holder.get("watchdog")
+        if w is not None:
+            w.cancel()
 
 
 def _main(holder):
+    _ANSWER["done"] = False                 # (a fresh run: the tests call this many times in one process)
     raw = _read_input()
     holder["raw"] = raw
     try:
         data = json.loads(raw.decode("utf-8-sig"))
     except (UnicodeDecodeError, ValueError) as e:
-        if GUARDED_RAW.search(raw) or (GUARDED_RAW_MCP.search(raw) and ROUGH_MCP.search(raw.decode("utf-8", "replace"))):
+        named = TOOL_NAME_RAW.search(raw)
+        name = named.group(1).decode("utf-8", "replace") if named else ""
+        if (name and not name.startswith("mcp__") and name not in _pass_tools()) or GUARDED_RAW.search(raw) or (GUARDED_RAW_MCP.search(raw) and ROUGH_MCP.search(raw.decode("utf-8", "replace"))):      # (ROUGH_MCP also names FILE verbs -- delete, update, reset: on a fault such a call is refused whatever the release holds)
             _emit("deny", "shedkeeper: the hook input for a guarded tool could not be read as UTF-8 JSON (%s: %s), "
                           "so nothing can be copied first. Refused." % (e.__class__.__name__, e) + " " + _safe_block(
                 "the input ShedKeeper got for this action could not be read, so nothing can be copied first and the action was stopped",
@@ -907,6 +1069,8 @@ def _main(holder):
     tool = data.get("tool_name")
     t0 = time.monotonic()
     state = {}
+    watchdog = _start_watchdog(data) if holder.get("watchdog_on") else None
+    holder["watchdog"] = watchdog
     try:
         decision, text, meta = decide(data, state)
     except Exception as e:      # the hook catches EVERYTHING
@@ -961,7 +1125,18 @@ def _main(holder):
         except Exception:
             pass
     text = _with_block(decision, text)
+    if not _claim_answer():                 # the watchdog has taken the answer: it ends the process in a moment
+        threading.Event().wait(30)
+        return 0
     _emit(decision, text, message)
+    if watchdog is not None:
+        watchdog.cancel()
+    if decision != "deny" and state.get("guard"):
+        try:                    # the once-per-session words about a lowered promise are spent only now that they were delivered in an answer that lets the step through
+            from shedkeeper import guard as _guard
+            _guard.mark_said(state["guard"])
+        except Exception:
+            pass
     if decision != "deny" and state.get("warn_marks"):
         try:                    # the once-per-project warning is spent only now that it has been delivered in a decision that lets the command through
             from shedkeeper import survey
@@ -973,7 +1148,7 @@ def _main(holder):
 
 
 if __name__ == "__main__":
-    _rc = main()
+    _rc = main(watchdog=True)
     for _stream in (sys.stderr, sys.stdout):
         try:
             _stream.flush()

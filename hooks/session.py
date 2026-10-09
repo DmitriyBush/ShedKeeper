@@ -282,14 +282,14 @@ def main():
             warn += ["settings: " + str(p)[:300] for p in list(_problems)[:3]]        # a file that cannot be read, a value that is not understood: the safe default acts, and it is said
             remind_person, remind_agent, compact_person, compact_agent = "", "", "", ""
             try:
-                from shedkeeper import engines, settings_cli
+                from shedkeeper import config as _config, engines, settings_cli
                 remind_person, remind_agent = settings_cli.reminder_lines(settings, KIT.replace("\\", "/") + "/shedkeeper.py")
                 compact_person, compact_agent = settings_cli.reminder_lines(settings, KIT.replace("\\", "/") + "/shedkeeper.py", compact=True)
                 try:
                     proof_roots = list(dict.fromkeys([root] + list(store.all_roots(settings))))
                 except Exception:
                     proof_roots = [root]
-                bad = engines.session_notes(proof_roots)
+                bad = "" if not _config.DATABASES_IN_THIS_RELEASE else engines.session_notes(proof_roots)        # a release without databases does not read the folder of adapters
                 if bad:                         # an adapter that failed to load: protection of that engine is quietly lower
                     remind_person = (remind_person + " " if remind_person else "") + "ShedKeeper: " + bad + "."
                     remind_agent = (remind_agent + " " if remind_agent else "") + "ShedKeeper warning: " + bad + " (`python K/shedkeeper.py status` shows it)."
@@ -297,6 +297,17 @@ def main():
                     compact_agent = (compact_agent + " " if compact_agent else "") + "ShedKeeper warning: " + bad + " (`python K/shedkeeper.py status` shows it)."
             except Exception as e:      # a reminder is a convenience: its failure is a line in the log, never a failure of the start
                 store.log(root, {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": "reminder_error",
+                                 "error": "%s: %s" % (e.__class__.__name__, e)})
+            try:                            # the state of the protected list (3.5), what was added since the person confirmed it, what is found and not decided, the limits
+                from shedkeeper import protect
+                line_agent, line_person = protect.session_line(cwd, settings, KIT.replace("\\", "/") + "/shedkeeper.py")
+                if line_agent:
+                    remind_agent = (remind_agent + " " if remind_agent else "") + line_agent
+                    compact_agent = (compact_agent + " " if compact_agent else "") + line_agent
+                    remind_person = (remind_person + " " if remind_person else "") + line_person
+                    compact_person = (compact_person + " " if compact_person else "") + line_person
+            except Exception as e:          # the line is a convenience: its failure is a line in the log, never a failure of the start
+                store.log(root, {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": "protect_line_error",
                                  "error": "%s: %s" % (e.__class__.__name__, e)})
             stale = [w for w in warn if "older form" in w or "could not check its own installation" in w or "differs from the one this kit ships" in w or w.startswith("settings: ")]
             if stale:                       # the person is told too: the protection of MCP calls and the time budget are lower than they think

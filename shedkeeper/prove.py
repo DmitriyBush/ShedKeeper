@@ -29,7 +29,7 @@ import os
 import time
 from datetime import datetime
 
-from . import config, confirm, db, dbcli, engines, store
+from . import config, confirm, db, dbcli, engines, protect, store
 
 
 def probe_rows(n=120):
@@ -81,6 +81,8 @@ def _default_probe(ad, cwd):
 
 def run(engine_id, target_spec, cwd, settings, session="", now=None):
     """-> (exit code, text). 0 proved; 1 refused or not proved."""
+    if not config.DATABASES_IN_THIS_RELEASE:          # a release without databases proves no engine
+        return 2, protect.DB_OFF_TEXT
     ad = engines.get(engine_id)
     if ad is None:
         broke = engines.broken_claims(engine_id)
@@ -228,6 +230,8 @@ def _ask_activation(ad, cwd, settings, session):
 def activate(engine_id, cwd, settings, session=""):
     """-> (exit code, text). The person confirms the proof of an adapter of the user for its CURRENT bytes: 0 activated (or active already);
     4 not applied, a code was issued; 1 refused (no proof, not the person's word, the code could not be spent, the store cannot be used)."""
+    if not config.DATABASES_IN_THIS_RELEASE:          # a release without databases activates no adapter
+        return 2, protect.DB_OFF_TEXT
     ad = engines.get(engine_id)
     if ad is None:
         broke = engines.broken_claims(engine_id)

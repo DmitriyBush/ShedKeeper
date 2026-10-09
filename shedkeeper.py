@@ -3,6 +3,9 @@
   python shedkeeper.py trash PATH [PATH ...] --reason "why"   move to the trash of the volume (nothing is deleted)
   python shedkeeper.py find TEXT [--days N] [--volume X:]    search the trash and the copies by a part of the path
   python shedkeeper.py restore ID [--to PATH] [--volume X:]  bring an item or an old version back
+  python shedkeeper.py protect show|add|remove|exclude|unexclude|decline|confirm   the LIST of what is protected (checked before every step of the agent)
+  python shedkeeper.py snapshot                              copy every entry of the list NOW, outside Claude Code (no time limit of the hook; prints progress)
+  python shedkeeper.py find --steps                          the steps with copies; `restore --step N --to NEWPLACE` brings the list back as it was at step N
   python shedkeeper.py status                                where the store is, what is in it, are the hooks in (and by which door), the databases
   python shedkeeper.py dbcopy ADDRESS|FILE [--mcp-server NAME]   a verified copy of a database NOW (PostgreSQL address or SQLite file)
   python shedkeeper.py settings [--json]                     every setting: now, default, allowed, weight, what it does in plain words
@@ -50,7 +53,7 @@ KIT = os.path.dirname(os.path.abspath(__file__))
 if KIT not in sys.path:
     sys.path.insert(0, KIT)
 
-from shedkeeper import config, confirm, db, dbcli, prove, settings_cli, store, survey  # noqa: E402
+from shedkeeper import config, confirm, db, dbcli, guard, protect, prove, settings_cli, store, survey  # noqa: E402
 
 
 def _utf8():
@@ -83,7 +86,23 @@ def cmd_trash(a, settings):
     return 3 if counts["unindexed"] else 0
 
 
+def cmd_protect(a, settings):
+    code, text = protect.cli(list(a.args), settings, os.getcwd(), _session())
+    print(text)
+    return code
+
+
+def cmd_snapshot(a, settings):
+    code, text = guard.snapshot(os.getcwd(), settings, _session(), out=lambda t: print(t, flush=True))
+    print(text)
+    return code
+
+
 def cmd_find(a, settings):
+    if a.steps or not a.text:
+        code, text = guard.find_text(os.getcwd(), settings)
+        print(text)
+        return code
     hits, problems = store.find(a.text, settings, days=a.days, volume=a.volume)
     try:
         dhits, dproblems = dbcli.find_copies(a.text, settings, days=a.days, volume=a.volume)
@@ -115,6 +134,16 @@ def cmd_dbcopy(a, settings):
 
 
 def cmd_restore(a, settings):
+    if a.step is not None:
+        if not a.to:
+            print("REFUSED: `restore --step N` needs --to NEWPLACE (a place that does not exist yet: a restore overwrites nothing)")
+            return 1
+        code, text = guard.restore_step(os.getcwd(), settings, a.step, a.to, _session())
+        print(text)
+        return code
+    if not (a.id or "").strip():
+        print("usage: restore ID [--to PATH]   or   restore --step N --to NEWPLACE")
+        return 2
     if (a.id or "").strip().startswith("d:"):
         status, msg = dbcli.restore_copy(a.id.strip(), settings, to=a.to, session=_session(), volume=a.volume)
     else:
@@ -199,6 +228,12 @@ def cmd_status(a, settings):
     except Exception as e:
         print("could not read the settings: %s" % e)
     try:
+        for line in guard.status_lines(os.getcwd(), settings):
+            print(line)
+        print("limits of the protected list: " + " ".join(x.split(" (limit")[0] for x in protect.LIMITS))
+    except Exception as e:
+        print("could not read the state of the protected list: %s: %s" % (e.__class__.__name__, db.mask_secrets(str(e))))
+    try:
         for line in dbcli.status_lines(settings, os.getcwd()):
             print(line)
     except Exception as e:
@@ -231,14 +266,19 @@ def main(argv=None):
     p = sub.add_parser("trash", help="move to the trash")
     p.add_argument("paths", nargs="+")
     p.add_argument("--reason", default="")
-    p = sub.add_parser("find", help="search trash and copies")
-    p.add_argument("text")
+    p = sub.add_parser("find", help="search trash and copies; --steps lists the steps with copies of the protected list")
+    p.add_argument("text", nargs="?", default="")
     p.add_argument("--days", type=int)
     p.add_argument("--volume")
+    p.add_argument("--steps", action="store_true", help="the steps with copies of the protected list")
     p = sub.add_parser("restore", help="bring back")
-    p.add_argument("id")
+    p.add_argument("id", nargs="?", default="")
     p.add_argument("--to")
     p.add_argument("--volume")
+    p.add_argument("--step", type=int, help="the state of the protected list as it was copied up to this step, into --to (a NEW place)")
+    p = sub.add_parser("protect", help="the list of what is protected")
+    p.add_argument("args", nargs=argparse.REMAINDER)
+    sub.add_parser("snapshot", help="copy every entry of the protected list now (outside Claude Code)")
     sub.add_parser("status", help="show the state")
     p = sub.add_parser("settings", help="every setting and what it does")
     p.add_argument("--json", action="store_true")
@@ -270,7 +310,7 @@ def main(argv=None):
         print("note: " + pr)
     return {"trash": cmd_trash, "find": cmd_find, "restore": cmd_restore, "status": cmd_status, "dbcopy": cmd_dbcopy,
             "adopt": cmd_adopt, "selftest": cmd_selftest, "settings": cmd_settings, "set": cmd_set,
-            "survey": cmd_survey, "prove": cmd_prove, "activate": cmd_activate, "quarantine": cmd_quarantine}[a.cmd](a, settings)
+            "survey": cmd_survey, "protect": cmd_protect, "snapshot": cmd_snapshot, "prove": cmd_prove, "activate": cmd_activate, "quarantine": cmd_quarantine}[a.cmd](a, settings)
 
 
 if __name__ == "__main__":

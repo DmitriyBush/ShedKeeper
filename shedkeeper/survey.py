@@ -179,7 +179,7 @@ def _describe_base(b, source):
     return out
 
 
-def project_databases(cwd, env=None):
+def project_databases(cwd, env=None, bases_out=None):
     """[dict] -- the databases the files of the project name, found the way db.py finds them for a command (no command here). A `.env` that
     exists and cannot be read is a line of its own (it is not `no database`)."""
     env = os.environ if env is None else env
@@ -200,6 +200,8 @@ def project_databases(cwd, env=None):
     def add(b, source):
         if b is None:
             return
+        if bases_out is not None:
+            bases_out.append((b, source))
         d = _describe_base(b, source)
         key = (d["engine"], d["name"], d["source"])
         if key not in seen:
@@ -290,7 +292,7 @@ def recommendations(rep, settings):
     """[{key, value, why, weight}] -- what a person may want to set, from what the survey found. Plain words, English; the
     agent translates. A recommendation is an offer: nothing is changed by the survey."""
     recs = []
-    bases = rep["databases"]
+    bases = rep.get("databases", [])
     pg_local = [b for b in bases if b["engine"] == "PostgreSQL"]
     if pg_local and not rep["pg_dump"]["path"]:
         recs.append({"key": "pg_dump_path", "value": "<folder or file of pg_dump>",
@@ -322,7 +324,7 @@ def recommendations(rep, settings):
                      "why": "%d database source(s) could not be read to the end (%s). A command that destroys data there is refused with "
                             "the command that names the database (`SHEDKEEPER_DB=...`): nothing to set." % (len(unnamed), unnamed[0]["note"]),
                      "weight": "notice"})
-    nodb = [s["name"] for s in rep["mcp"] if s["is_db"] is False]
+    nodb = [s["name"] for s in rep.get("mcp", ()) if s["is_db"] is False]
     if nodb:
         recs.append({"key": "(none)", "value": "",
                      "why": "MCP server(s) %s hold no database by their settings and names: their delete-type tools pass without a stop. If one "
@@ -332,56 +334,232 @@ def recommendations(rep, settings):
         recs.append({"key": "(none)", "value": "",
                      "why": "only %.1f GB are free on the volume of the store: copies of files and databases are kept there and only a person "
                             "cleans them." % rep["store"]["free_gb"], "weight": "notice"})
-    if not settings.get("db_protection", True):
+    if config.DATABASES_IN_THIS_RELEASE and not settings.get("db_protection", True):
         recs.append({"key": "db_protection", "value": "true",
                      "why": "the protection of databases is switched OFF now: commands that destroy a database go ahead with no copy.",
                      "weight": "protection"})
     return recs
 
 
-def gather(cwd, settings):
-    cwd = cwd or os.getcwd()
-    pgdump, ver, _major = db.find_pg_dump(settings)
+# ============================================================================================ candidates for the protected list (0.3.0)
+
+SQLITE_EXT = (".db", ".sqlite", ".sqlite3", ".db3", ".sdb")
+
+
+def _server_candidates(settings, cwd):
+    """([candidate], note) -- the databases of the PostgreSQL server on THIS machine that this user can reach, from the database `postgres` (read only): the size,
+    `track_counts`, and whether the sessions of other roles are visible. A server that cannot be reached is one note, not an error."""
+    pgdump, why, _major = db.find_pg_dump(settings)
+    if not pgdump:
+        return [], "the local PostgreSQL server was not asked: %s" % why
+    psql = db._sibling(pgdump, "psql")
+    if not psql:
+        return [], "the local PostgreSQL server was not asked: psql was not found next to pg_dump"
+    host = os.environ.get("PGHOST") or "localhost"
+    if not db.is_local_host(host):
+        return [], "PGHOST names another machine (%s): its databases are never listed as candidates (limit 1)" % host
+    port = int(os.environ.get("PGPORT") or 5432)
+    user = os.environ.get("PGUSER") or ""
+    base = db.pg_base(host, port, "postgres", user, "", source="local server")
+    if isinstance(base, db.Unnamed):
+        return [], "the local PostgreSQL server was not asked: %s" % base.reason
+    q = ("select datname, pg_database_size(datname), current_setting('track_counts'), "
+         "(pg_has_role(current_user,'pg_read_all_stats','member') or (select rolsuper from pg_roles where rolname=current_user)) "
+         "from pg_database where not datistemplate and datname <> 'postgres' order by 1")
+    env = db._child_env(base, 8)
+    rc, out, err, timed = db._run([psql, "-X", "-w", "-At", "-F", "|", "-v", "ON_ERROR_STOP=1", "-c", q], env, 8)
+    if timed or rc != 0:
+        return [], "the local PostgreSQL server could not be asked (%s)" % ("timeout" if timed else db.mask_secrets(err.strip())[:120])
+    out_c = []
+    for line in out.splitlines():
+        p = line.split("|")
+        if len(p) != 4:
+            continue
+        name, size, track, vis = p[0], int(p[1]), p[2], p[3].strip() == "t"
+        ent = {"kind": "P", "host": host, "port": port, "dbname": name, "user": user, "id": "tmp-p-" + name}
+        notes = []
+        if track.lower() != "on":
+            notes.append("track_counts = %s: the counters do not move, so it would be copied before EVERY step" % track)
+        if not vis:
+            notes.append("sessions of other roles are NOT visible to this role: while an application keeps one open, every step may need a copy")
+        out_c.append({"key": "%s:%d/%s" % (host, port, name), "kind": "P", "entry": ent,
+                      "text": "PostgreSQL database %s on this machine (%.1f MB)%s" % (name, size / 1048576.0, ("; " + "; ".join(notes)) if notes else "")})
+    return out_c, ""
+
+
+DB_ENV_LINE = re.compile(r"^\s*(?:export\s+)?[A-Za-z_]*(?:DATABASE|DB)[A-Za-z_]*URL\s*=\s*['\"]?(?:postgres|postgresql|sqlite|mysql|mariadb|mongodb)", re.I | re.M)
+
+
+def _database_hint(pr, files):
+    """What in the project looks like a database -- WITHOUT the code of the databases (a release without databases runs none of it): a `DATABASE_URL`-like line of the `.env` in the project folder,
+    or a file with an extension of a database. [] when nothing; the survey then says nothing. A hint, not a finding: the files `prisma/schema.prisma`, `alembic.ini` ... are not read here."""
+    why = []
     try:
-        from . import dbcli
-        dbcli.use_proofs(cwd, settings)          # (a proven adapter's engine is not reported as one that is not proven)
+        with open(os.path.join(pr, ".env"), "rb") as fh:
+            if DB_ENV_LINE.search(fh.read(65536).decode("utf-8", "replace")):
+                why.append("a database address in .env")
+    except OSError:
+        pass
+    n = sum(1 for rel in files if rel.lower().endswith(SQLITE_EXT))
+    if n:
+        why.append("%d file(s) with the extension of a database" % n)
+    return why
+
+
+def candidates(cwd, settings, walk_s=8.0, with_server=True):
+    """[{key, kind, text, entry}] -- what a person could put in the protected list, found by reading only: the project folder (with the price of a check, measured here),
+    SQLite files (by their header), the databases the files of the project name and the databases of the local server (with `track_counts` and the visibility of sessions).
+    A remote database is named and NOT included (`entry` is None): the person adds it with their own word. Nothing is written."""
+    from . import protect, signals
+    cwd = cwd or os.getcwd()
+    pr = project_root(cwd)
+    out = []
+    t0 = time.monotonic()
+    skip = []
+    try:
+        sroot = store.store_root(pr, settings)
+        if sroot:
+            skip = [sroot, os.path.dirname(sroot)]
     except Exception:
         pass
+    files, expensive, links = {}, False, []
+    try:
+        files, _dirs, _n = signals.walk_tree(pr, skip, signals.DEFAULT_EXCLUDE, time.monotonic() + walk_s, skipped=links)
+    except TimeoutError:
+        expensive = True
+    except OSError:
+        files = {}
+    walk_ms = int((time.monotonic() - t0) * 1000)
+    usn, why_off = signals.journal_available(pr)
+    journal = "on" if usn is not None else "off"
+    if usn is not None:
+        usn.close()
+    try:
+        ent, _notes = protect.make_entry("tree", pr, cwd, settings, [])
+        ent["id"] = "tmp-d"
+    except ValueError:
+        ent = None
+    over = expensive or walk_ms > int(settings.get("walk_budget_ms", 3000))
+    if ent is not None:
+        if journal == "on":
+            price = "the change journal of the volume is ON: a check of an untouched tree costs about 1-3 ms"
+        else:
+            price = "the change journal of the volume is OFF: every check walks the tree (this walk: %d ms%s)" % (walk_ms, ", EXPENSIVE: more than walk_budget_ms" if over else "")
+        if expensive:
+            text = "the project folder %s (a very large tree: the walk did not finish in %d s; %s; EXPENSIVE)" % (pr, int(walk_s), price)
+        else:
+            text = "the project folder %s (%d files; %s%s)" % (pr, len(files), price, ("; %d link(s) (junction, symbolic link) are not entered (limit 9)" % len(links)) if links else "")
+        out.append({"key": os.path.normcase(os.path.abspath(pr)), "kind": "D", "entry": ent, "text": text})
+    dbs = config.DATABASES_IN_THIS_RELEASE         # a release without databases offers none (the data is still copied as files); it says in one line that the project looks like it has one
+    if not dbs:
+        hint = _database_hint(pr, files)
+        if hint:
+            out.append({"key": "(databases)", "kind": "-", "entry": None,
+                        "text": "databases: not protected in this release; a later version will add them (this project looks like it has one: %s)" % "; ".join(hint)})
+    for rel in sorted(files):
+        if dbs and rel.lower().endswith(SQLITE_EXT):
+            p = os.path.join(pr, rel.replace("/", os.sep))
+            if signals.is_sqlite_file(p):
+                out.append({"key": os.path.normcase(os.path.abspath(p)), "kind": "S", "entry": {"kind": "S", "path": os.path.abspath(p), "id": "tmp-s-" + os.path.basename(p)},
+                            "text": "SQLite file %s (%.1f MB; inside the project folder it is copied with the backup program, never as a plain file)" % (p, files[rel][0] / 1048576.0)})
+    bases = []
+    try:
+        if dbs:
+            project_databases(cwd, bases_out=bases)
+    except Exception:
+        pass
+    seen = {c["key"] for c in out}
+    for b, source in bases:
+        if isinstance(b, db.Base) and b.engine == "postgres":
+            key = "%s:%d/%s" % ("localhost" if not b.remote else b.host, b.port or 5432, b.dbname)
+            if b.remote:
+                out.append({"key": key, "kind": "R", "entry": None,
+                            "text": "PostgreSQL database %s on ANOTHER machine, named in %s -- NOT included (limit 1); add it with `protect add remote ...` if you want it copied at every step" % (b.url_masked, source)})
+            elif key not in seen:
+                seen.add(key)
+                out.append({"key": key, "kind": "P", "entry": {"kind": "P", "host": b.host or "localhost", "port": b.port or 5432, "dbname": b.dbname, "user": b.user, "id": "tmp-p-" + b.dbname},
+                            "text": "PostgreSQL database %s on this machine, named in %s" % (b.dbname, source)})
+        elif isinstance(b, db.Base) and b.engine == "sqlite" and b.path and os.path.isfile(b.path):
+            key = os.path.normcase(os.path.abspath(b.path))
+            if key not in seen and signals.is_sqlite_file(b.path):
+                seen.add(key)
+                out.append({"key": key, "kind": "S", "entry": {"kind": "S", "path": os.path.abspath(b.path), "id": "tmp-s-" + os.path.basename(b.path)},
+                            "text": "SQLite file %s, named in %s" % (b.path, source)})
+    if with_server and dbs:
+        cs, note = _server_candidates(settings, cwd)
+        for c in cs:
+            if c["key"] not in seen:
+                seen.add(c["key"])
+                out.append(c)
+        if note:
+            out.append({"key": "(server)", "kind": "-", "entry": None, "text": note})
+    # the same physical volume for the store and the data is a limit named here (a lost disk takes the copies with the data)
+    try:
+        sroot = store.store_root(pr, settings)
+        if sroot and os.path.splitdrive(os.path.abspath(sroot))[0].upper() == os.path.splitdrive(os.path.abspath(pr))[0].upper():
+            out.append({"key": "(store)", "kind": "-", "entry": None,
+                        "text": "the store (%s) is on the same volume as the project: losing the disk loses the data AND the copies (outside the promise)" % sroot})
+    except Exception:
+        pass
+    return out
+
+
+def gather(cwd, settings):
+    cwd = cwd or os.getcwd()
     rep = {
         "project": project_root(cwd),
         "python": sys.version.split()[0],
-        "pg_dump": {"path": pgdump, "version": ver if pgdump else "", "why_not": "" if pgdump else ver},
         "store": store_volume(cwd, settings),
-        "databases": project_databases(cwd),
-        "mcp": mcp_servers(cwd),
         "settings": {k: config.format_value(settings.get(k)) for k in config.KEYS},
     }
+    if config.DATABASES_IN_THIS_RELEASE:         # a release without databases looks at no database, no MCP file and no pg_dump, and says nothing of them
+        pgdump, ver, _major = db.find_pg_dump(settings)
+        try:
+            from . import dbcli
+            dbcli.use_proofs(cwd, settings)          # (a proven adapter's engine is not reported as one that is not proven)
+        except Exception:
+            pass
+        rep["pg_dump"] = {"path": pgdump, "version": ver if pgdump else "", "why_not": "" if pgdump else ver}
+        rep["databases"] = project_databases(cwd)
+        rep["mcp"] = mcp_servers(cwd)
     rep["recommendations"] = recommendations(rep, settings)
+    try:
+        rep["candidates"] = [{"key": c["key"], "kind": c["kind"], "text": c["text"]} for c in candidates(cwd, settings)]
+    except Exception as e:                      # the survey stays readable when the candidates cannot be made
+        rep["candidates"] = [{"key": "(error)", "kind": "-", "text": "the candidates for the protected list could not be made (%s: %s)" % (e.__class__.__name__, e)}]
     return rep
 
 
 def render(rep):
     L = ["ShedKeeper survey of %s (read only: nothing was changed, no password is shown)" % rep["project"],
          "python: %s" % rep["python"]]
-    pg = rep["pg_dump"]
-    L.append("pg_dump: %s" % (("%s -- %s" % (pg["path"], pg["version"])) if pg["path"] else "NOT FOUND (%s)" % pg["why_not"]))
+    pg = rep.get("pg_dump")
+    if pg is not None:
+        L.append("pg_dump: %s" % (("%s -- %s" % (pg["path"], pg["version"])) if pg["path"] else "NOT FOUND (%s)" % pg["why_not"]))
     st = rep["store"]
     L.append("store: %s; free space on its volume: %s" % (st["root"] or "(no folder can be named for this project)",
                                                        ("%.1f GB of %.1f GB" % (st["free_gb"], st["total_gb"])) if st["free_gb"] is not None else "unknown"))
-    L.append("databases the files of the project name:")
-    if not rep["databases"]:
+    if "databases" in rep:
+        L.append("databases the files of the project name:")
+    if "databases" in rep and not rep["databases"]:
         L.append("  none found (looked at .env, prisma/schema.prisma, supabase/config.toml, alembic.ini, config/database.yml, Laravel .env)")
-    for b in rep["databases"]:
+    for b in rep.get("databases", ()):
         L.append("  - %s %s %s [%s]%s%s" % (b["engine"], b["where"], b["name"], b["source"],
                                           (" (%.1f MB)" % b["size_mb"]) if b.get("size_mb") is not None else "",
                                           ("  -- " + b["note"]) if b["note"] else ""))
-    L.append("MCP servers in the settings:")
-    if not rep["mcp"]:
+    if "mcp" in rep:
+        L.append("MCP servers in the settings:")
+    if "mcp" in rep and not rep["mcp"]:
         L.append("  none found")
-    for s in rep["mcp"]:
+    for s in rep.get("mcp", ()):
         verdict = {True: "counts as a DATABASE server", False: "no database (its delete-type tools pass)", None: "not decided"}[s["is_db"]]
         extra = ", ".join(x for x in (s.get("engine") or "", "remote" if s.get("remote") else "") if x)
         L.append("  - %s [%s]: %s%s -- %s" % (s["name"], s["where"], verdict, (" (%s)" % extra) if extra else "", s["why"]))
+    L.append("candidates for the protected list (nothing is protected by a copy before a step until you confirm a list: `python %s protect show`):" % advice.kit_py())
+    for c in rep.get("candidates") or ():
+        L.append("  - %s" % c["text"])
+    if not rep.get("candidates"):
+        L.append("  none found")
     L.append("current settings: " + ", ".join("%s = %s" % (k, v) for k, v in rep["settings"].items() if v != ""))
     L.append("recommendations (offers only; a setting is changed with `python %s set KEY VALUE`, and one that weakens protection needs the user's confirmation code):" % advice.kit_py())
     if not rep["recommendations"]:
