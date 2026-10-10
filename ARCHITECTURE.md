@@ -614,7 +614,7 @@ A mutation whose guarding test cannot be measured is `NOT MEASURED`, never `CAUG
 
 ## 12. Not in this release: databases
 
-**ShedKeeper 0.3.0 protects files. Databases are not protected in this version; a later version will add them.** This section is the former user-facing text about databases, moved here from the README. It is NOT SHIPPED: the code exists in the kit and its tests run with `config.DATABASES_IN_THIS_RELEASE` set to True, but in this release the hook, the command line, the survey and the start of a session do nothing about a database (`DB_OFF_TEXT`: "Database protection is built and under review; it is not part of this release. Files are protected."). It is the base of a later version and will be rewritten when that version is decided.
+**ShedKeeper 0.3.0 protects files. Databases are not protected in this version; a later version will add them.** This section is the former user-facing text about databases, moved here from the README. It is NOT SHIPPED: the code exists in the kit and its tests run with `config.DATABASES_IN_THIS_RELEASE` set to True, but in this release the hook, the command line, the survey and the start of a session do nothing about a database (`DB_OFF_TEXT`: "Databases are not protected in this version; a later version will add them. Files are protected."). It is the base of a later version and will be rewritten when that version is decided.
 
 ### 12.1 Databases (what the build does; switched off)
 

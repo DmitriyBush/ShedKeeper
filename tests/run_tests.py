@@ -6075,6 +6075,38 @@ def t_n12_c2_session_id(t):
                 and "transcript_error" in logged and "not a plain name" in logged, (rc, err[:200], logged[-300:]))
 
 
+def t_n14_transcripts_none_is_not_an_error(t):
+    """N14: no transcript folder, or an empty one, is the norm for a new project: no `transcript_error`, a note
+    `transcripts_none`; a folder that cannot be read (a `.jsonl` that is not a readable file) stays `transcript_error`."""
+    sb = sandbox("n14tn")
+    home = os.path.join(sb, "home")
+    os.makedirs(home)
+    proj = os.path.join(sb, "proj")
+    os.makedirs(proj)
+
+    def start(folder):
+        tp = os.path.join(sb, "cc", "projects", folder, "abc.jsonl")        # the file of the starting session does not exist yet
+        with store_env(sb) as (root, st), env(SHEDKEEPER_USER_HOME=home):
+            ev = {"hook_event_name": "SessionStart", "transcript_path": tp, "session_id": "abc", "cwd": proj}
+            rc, _out, err = hook_sub(SESSION, ev)
+            logf = os.path.join(root, "log.jsonl")
+            whole = read(logf) if os.path.isfile(logf) else ""
+            new, seen[0] = whole[seen[0]:], len(whole)         # the journal is shared by the three starts: only the lines this start wrote
+            return rc, err, new
+    seen = [0]
+    rc, err, logged = start("p-absent")
+    t.check("N14 no folder: exit 0, no `transcript_error`, a `transcripts_none` note",
+            rc == 0 and "transcript_error" not in logged and "transcripts_none" in logged and "transcripts_sweep" in logged, (rc, err[:200], logged[-300:]))
+    os.makedirs(os.path.join(sb, "cc", "projects", "p-empty"))
+    rc, err, logged = start("p-empty")
+    t.check("N14 empty folder: exit 0, no `transcript_error`, a `transcripts_none` note",
+            rc == 0 and "transcript_error" not in logged and "transcripts_none" in logged, (rc, err[:200], logged[-300:]))
+    os.makedirs(os.path.join(sb, "cc", "projects", "p-bad", "broken.jsonl"))       # listed as a transcript, cannot be read as a file
+    rc, err, logged = start("p-bad")
+    t.check("N14 an unreadable transcript: still `transcript_error`, and no `transcripts_none`",
+            rc == 0 and "transcript_error" in logged and "broken" in logged and "transcripts_none" not in logged, (rc, err[:200], logged[-300:]))
+
+
 def t_n12_c3_corrupt_last_copy(t):
     """C3: `same` only when the previous copy, read now, equals the source; a damaged one -> a new copy and a journal line."""
     sb = sandbox("n12c3")
@@ -15763,7 +15795,7 @@ def t_r8_db_off(t):
         t.check("release: databases are NOT in this release (the constant of the release is False)", config.DATABASES_IN_THIS_RELEASE is False and "DATABASES_IN_THIS_RELEASE" not in config.KEYS, "")
         for kind, val in (("sqlite", dbp), ("pg", "localhost:5432/app?user=me"), ("remote", "db.example.com:5432/app?user=me")):
             rc, text = protect.cli(["add", kind, val], st, proj, "s1")
-            t.check("release: `protect add %s` is refused: exit code 2 and the words of the release" % kind, rc == 2 and text == "Database protection is built and under review; it is not part of this release. Files are protected.", (rc, text))
+            t.check("release: `protect add %s` is refused: exit code 2 and the words of the release" % kind, rc == 2 and text == "Databases are not protected in this version; a later version will add them. Files are protected.", (rc, text))
         t.check("release: ... and nothing was written (no list)", protect.state(proj, st).kind == "none", protect.state(proj, st).kind)
         rc, text = protect.cli(["add", "tree", proj], st, proj, "s1")
         t.check("release: a folder is added as before", rc == 0 and protect.state(proj, st).entries[0]["kind"] == "D", (rc, text))
@@ -17536,7 +17568,8 @@ GROUPS = [("1 recognize", [t_write_targets, t_delete_cases, t_delete_paths]),
           ("25 the refusal note refusal note", [t_n11_refusal_note]),
           ("26 the refusal note mutations", [t_mutations_n11]),
           ("27 the independent-review findings", [t_n12_c1_restore_race, t_n12_c2_session_id, t_n12_c3_corrupt_last_copy,
-                                           t_n12_c4_door_when_hooks_disabled, t_n12_c5_uninstall_exact]),
+                                           t_n12_c4_door_when_hooks_disabled, t_n12_c5_uninstall_exact,
+                                           t_n14_transcripts_none_is_not_an_error]),
           ("28 the independent-review findings mutations", [t_mutations_n12]),
           ("29 exact install install exact", [t_n13_install_exact]),
           ("30 exact install mutations", [t_mutations_n13]),

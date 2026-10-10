@@ -26,7 +26,7 @@ from . import config, confirm, store
 
 FILE = "protected.json"
 DB_KINDS = ("S", "P", "R")                # the kinds of the databases: not protected in a release whose `config.DATABASES_IN_THIS_RELEASE` is False
-DB_OFF_TEXT = "Database protection is built and under review; it is not part of this release. Files are protected."
+DB_OFF_TEXT = "Databases are not protected in this version; a later version will add them. Files are protected."
 DB_FILE_HINT = "A SQLite file is a file: to protect it, add the folder as a tree (`protect add tree FOLDER`); the file in it is copied with the backup program."
 KINDS = {"D": "tree", "S": "SQLite file", "P": "PostgreSQL database on this machine", "R": "PostgreSQL database on another machine",
          "X": "database of another engine (an adapter of the user)"}

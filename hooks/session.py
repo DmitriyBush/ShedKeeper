@@ -110,6 +110,8 @@ def _sweep(store, root, tdir, deadline_s):
             if fn.endswith(".jsonl"):
                 p = os.path.join(tdir, fn)
                 files.append((os.path.getmtime(p), p, fn[:-6]))
+    except FileNotFoundError:       # no folder yet (a new project): the norm, not an error
+        return 0, 0, [], 0
     except OSError as e:
         return 0, 0, ["cannot list %s: %s" % (tdir, e)], 0
     files.sort(reverse=True)        # the newest first: they are the ones a crash just lost
@@ -273,6 +275,8 @@ def main():
                 problems += f
                 store.log(root, {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": "transcripts_sweep",
                                  "copied": c, "same": s, "failed": len(f), "left": left})
+                if not (c or s or f or left):       # nothing to save (no folder, or no transcripts in it): a note, not an error
+                    store.log(root, {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": "transcripts_none"})
         for p in problems:
             store.log(root, {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": "transcript_error",
                              "error": p[:300]})
