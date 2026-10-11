@@ -3931,9 +3931,9 @@ def t_n5_files(t):
     m = install_mod()
     version = read(os.path.join(KIT, "VERSION")).strip()
     plug, market = n5_json(PLUGIN_JSON), n5_json(MARKET_JSON)
-    t.check("plugin.json: name shedkeeper, the version of VERSION, Apache-2.0, author Serpentis-Git, a description",
+    t.check("plugin.json: name shedkeeper, the version of VERSION, Apache-2.0, author DmitriyBush, a description",
             plug.get("name") == "shedkeeper" and plug.get("version") == version and plug.get("license") == "Apache-2.0"
-            and (plug.get("author") or {}).get("name") == "Serpentis-Git" and plug.get("description"), plug)
+            and (plug.get("author") or {}).get("name") == "DmitriyBush" and plug.get("description"), plug)
     t.check("plugin.json: the name is the one install.py and the messages use (shedkeeper@shedkeeper)",
             plug.get("name") == m.PLUGIN and m.PLUGIN_ID == "%s@%s" % (plug.get("name"), market.get("name")), (m.PLUGIN_ID, market.get("name")))
     t.check("plugin.json: no component paths that would replace the default hooks/hooks.json",
@@ -4262,7 +4262,7 @@ def n6_plugin_installed(home, key="shedkeeper@shedkeeper", real=False, version="
     write(reg_path, json.dumps(reg, indent=2))
     km_path = os.path.join(pl, "known_marketplaces.json")
     km = jload(km_path) if os.path.exists(km_path) else {}
-    src = {"source": "directory", "path": directory} if directory else {"source": "github", "repo": "Serpentis-Git/shedkeeper"}
+    src = {"source": "directory", "path": directory} if directory else {"source": "github", "repo": "DmitriyBush/shedkeeper"}
     km[market] = {"source": src, "installLocation": directory or os.path.join(pl, "marketplaces", market), "lastUpdated": "2026-10-01T00:00:00Z"}
     write(km_path, json.dumps(km, indent=2))
     return root
@@ -4517,7 +4517,7 @@ def t_n5_docs(t):
     i1, i2 = readme.find("### 1. As a Claude Code plugin"), readme.find("### 2. With `install.py`")
     t.check("README, install: the plugin way is FIRST and install.py is second", 0 < i1 < i2, (i1, i2))
     way1 = readme[i1:i2]
-    t.check("README: the two commands with the real names", "/plugin marketplace add Serpentis-Git/ShedKeeper" in way1
+    t.check("README: the two commands with the real names", "/plugin marketplace add DmitriyBush/ShedKeeper" in way1
             and "/plugin install shedkeeper@shedkeeper" in way1, way1[:300])
     flat = " ".join(way1.split())
     t.check("README: honest -- while the repository is closed the first command works only with access; a local folder works; tokens for background updates",
@@ -13527,8 +13527,10 @@ def t_o6_docs(t):
     arch = read(os.path.join(KIT, "ARCHITECTURE.md"))
     first = readme[:readme.index("## Contents")]
     t.check("o6 README: the first screen (before the contents) says what it is, what it protects from, how to install, and what it does not do",
-            first.startswith("# ShedKeeper\n") and "What it protects you from" in first and "/plugin marketplace add" in first and "python install.py install --user" in first
-            and "What it does not do" in first and len(first.splitlines()) <= 40, len(first.splitlines()))
+            (first.startswith("# ShedKeeper\n") or (first.startswith('<p align="center"><img src="serpentis-emblem.png"') and '<h1 align="center">ShedKeeper</h1>' in first))
+            and "What it protects you from" in first and "/plugin marketplace add" in first and "python install.py install --user" in first
+            and "What it does not do" in first and len([ln for ln in first.splitlines() if not ln.startswith(('<p align="center">', '<h1 align="center">'))]) <= 40,
+            len(first.splitlines()))      # the centred emblem header (picture, name, byline) is not text of the first screen
     for h in ("## Contents", "## What it promises", "## What ShedKeeper reads and keeps", "## Updating from 0.2.0"):
         t.check("o6 README: the section %r is there" % h, h in readme, "")
     toc = readme[readme.index("## Contents"):readme.index("## What it promises")]
@@ -13786,7 +13788,7 @@ def t_p1_docs(t):
             len(slash) == 1 and len(shell) == 1 and slash[0] is not shell[0] and "install.py" not in slash[0] and "/plugin" not in shell[0], len(blocks))
     t.check("p1 A: no `#` anywhere in the block of slash commands (Claude Code would take the tail as an argument)", "#" not in slash[0], slash[0])
     t.check("p1 A: where the folder for install.py comes from: git clone of the repository, and cd into it",
-            "git clone https://github.com/Serpentis-Git/ShedKeeper" in shell[0] and "cd ShedKeeper" in shell[0]
+            "git clone https://github.com/DmitriyBush/ShedKeeper" in shell[0] and "cd ShedKeeper" in shell[0]
             and shell[0].index("git clone") < shell[0].index("cd ShedKeeper") < shell[0].index("python install.py install --user"), shell[0])
     t.check("p1 A: Git for Windows (Git Bash) is named among the requirements on the first screen, next to Python", "Git for Windows" in first and "Git Bash" in first and "Python 3.9+" in first, "")
     t.check("p1 A: ... and the code does refuse without it (install.py: NO_BASH_TEXT / find_bash)", "REFUSED: Git Bash was not found" in install_mod().NO_BASH_TEXT, "")

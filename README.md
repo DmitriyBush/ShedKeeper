@@ -1,4 +1,6 @@
-# ShedKeeper
+<p align="center"><img src="serpentis-emblem.png" alt="Serpentis AI" width="200"></p>
+<h1 align="center">ShedKeeper</h1>
+<p align="center"><sub>by Serpentis AI &middot; <a href="https://serpentis.ai">serpentis.ai</a> &middot; Apache-2.0</sub></p>
 
 **A safety net for the work an AI coding agent (Claude Code) does on your files -- on Windows.**
 
@@ -20,14 +22,14 @@ What it protects you from:
 As a plugin -- two commands, typed inside Claude Code, one after the other:
 
 ```
-/plugin marketplace add Serpentis-Git/ShedKeeper
+/plugin marketplace add DmitriyBush/ShedKeeper
 /plugin install shedkeeper@shedkeeper
 ```
 
 Without plugins -- in a terminal (the folder `install.py` needs is what `git clone` downloads):
 
 ```
-git clone https://github.com/Serpentis-Git/ShedKeeper
+git clone https://github.com/DmitriyBush/ShedKeeper
 cd ShedKeeper
 python install.py install --user
 ```
@@ -81,7 +83,7 @@ There are two ways in to the same hooks. **Use one of them, not both.**
 ### 1. As a Claude Code plugin (two commands inside Claude Code)
 
 ```
-/plugin marketplace add Serpentis-Git/ShedKeeper
+/plugin marketplace add DmitriyBush/ShedKeeper
 /plugin install shedkeeper@shedkeeper
 ```
 

@@ -1,7 +1,7 @@
 {
   "name": "shedkeeper",
   "owner": {
-    "name": "Serpentis-Git"
+    "name": "DmitriyBush"
   },
   "metadata": {
     "description": "ShedKeeper: a copy before the changes it recognizes (see Borders in the README), the trash instead of deletion"
