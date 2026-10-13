@@ -14,8 +14,9 @@ What it protects you from:
   Nothing is lost, and the agent is not stuck.
 - **A loss with no way back.** Ask your agent: it finds what was changed or removed, tells you what it was, and brings it back once
   you say yes. Nothing in ShedKeeper empties the store -- only you do.
-- **The protection switched off by the agent.** A change that weakens it is made only with a confirmation code you type yourself,
-  in your own message.
+- **The protection switched off by the agent.** A change that weakens it is made only after you confirm it: ShedKeeper gives a
+  one-time code (`SK-nnnnnn`, valid 30 minutes), the agent shows it to you, and you type `CONFIRM SK-nnnnnn` yourself, in your own
+  message. Nothing to prepare in advance -- the code appears when it is needed (see "Settings" below).
 
 '**Install, about a minute.** You need Windows, Python 3.9+ on PATH (standard library only) and Git for Windows (Claude Code runs hooks in its Git Bash, and `install.py` refuses without it). One way in, not both.
 
@@ -97,9 +98,10 @@ guarded action and the start of a session give you and the agent a loud warning 
 
 **Honest limits of this way, today:**
 
-- **While the repository is closed, the first command works only for someone who has access to it.** Claude Code
-  uses your own git credentials for it (for GitHub, for example `gh auth login`); a background update of a private
-  marketplace additionally needs `GITHUB_TOKEN` (or `GH_TOKEN`) in the environment, otherwise update by hand with
+- **The first command reads this repository from GitHub, and that was not measured here:** the repository was
+  closed while this release was tested. If you keep a closed copy of it (a private fork), Claude Code uses your own
+  git credentials for it (for GitHub, for example `gh auth login`); a background update of a private marketplace
+  additionally needs `GITHUB_TOKEN` (or `GH_TOKEN`) in the environment, otherwise update by hand with
   `/plugin marketplace update shedkeeper`.
 - **Without access, or to try it from a folder:** `/plugin marketplace add C:\path\to\this\folder` (a local
   folder works as a marketplace), then the same `/plugin install shedkeeper@shedkeeper`.
@@ -128,7 +130,7 @@ guarded action and the start of a session give you and the agent a loud warning 
   door proven: `install.py` then puts its own door in (a doubled hook is untidy; a silent pair is no protection). It takes
   the folder of a folder-marketplace to be the plugin's folder, which is right for a plugin with `"source": "./"` (this
   one); for a plugin kept in a subfolder of a marketplace the files are not found there and the plugin is not proven.
-  The GitHub marketplace was not measured (the repository is closed).
+  The GitHub marketplace was not measured (the repository was closed while this release was tested).
 - **`install.py` and `check` read the plugin registry from the environment of the process that runs `install.py`.** Claude
   Code reads its own environment: a `CLAUDE_CODE_PLUGIN_CACHE_DIR` or `CLAUDE_CONFIG_DIR` set in the launcher or in the
   `env` of `settings.json` is not seen from a plain terminal. Both commands print one line saying which folder the

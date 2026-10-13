@@ -4520,8 +4520,8 @@ def t_n5_docs(t):
     t.check("README: the two commands with the real names", "/plugin marketplace add DmitriyBush/ShedKeeper" in way1
             and "/plugin install shedkeeper@shedkeeper" in way1, way1[:300])
     flat = " ".join(way1.split())
-    t.check("README: honest -- while the repository is closed the first command works only with access; a local folder works; tokens for background updates",
-            "While the repository is closed, the first command works only for someone who has access to it" in flat
+    t.check("README: honest -- adding the marketplace from GitHub is not measured (closed while tested); a local folder works; tokens for a private copy",
+            "The first command reads this repository from GitHub, and that was not measured here" in flat
             and "a local folder works as a marketplace" in flat and "GITHUB_TOKEN" in flat, flat[:700])
     t.check("README: the cache copy and shedkeeper.ini are named with the way out (SHEDKEEPER_INI); the update rule (version)",
             "plugin cache" in flat and "SHEDKEEPER_INI" in flat and "new version number" in flat, "missing")
@@ -10087,12 +10087,8 @@ def t_docs4(t):
     t.check("the example adapter has a docstring that says it is tested and what to do with it", "WORKED, TESTED" in read(EX_ADAPTER) and "prove litedb" in read(EX_ADAPTER), "")
     # the kitchen: no word of the makers' own working world in a file of the kit (as in 0.2.0)
     bad = []
-    pats = [("the makers' word for an order of work", re.compile(r"(?i)" + "REMOVED")), ("the makers' agent", re.compile(r"\b" + "REMOVED" + r"\b")),
-            ("the makers' owner", re.compile(r"\b" + "REMOVED" + r"\b")),
-            ("a session id", re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")),
-            ("a short session id", re.compile(r"\b(?:" + "REMOVED)\b")),
-            ("a path of the makers' disks", re.compile("REMOVED")),
-            ("an instrument of the makers", re.compile(r"(?i)\blens(?:es)?\b|" + "ли" + "нз" + "|" + "REMOVED"))]
+    workshop = _workshop_words("all")
+    pats = [("a session id", re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"))] + (workshop or [])
     for dp, dn, fns in os.walk(KIT):
         dn[:] = [d for d in dn if d not in ("__pycache__", ".git")]
         for fn in fns:
@@ -10109,7 +10105,11 @@ def t_docs4(t):
                 m = rx.search(txt)
                 if m:
                     bad.append("%s: %s (%r)" % (os.path.relpath(p, KIT), label, txt[max(0, m.start() - 20):m.end() + 20]))
-    t.check("the kit holds no word of the kitchen of its makers (the makers' own vocabulary): grep is 0", not bad, bad[:5])
+    if workshop is None:
+        t.check("the kit holds no session id outside the tests (the makers' own words: NOT MEASURED below)", not bad, bad[:5])
+        t._add("NOT MEASURED", "the kit holds no word of the kitchen of its makers (the makers' own vocabulary): grep is 0", _WORKSHOP_MISSING)
+    else:
+        t.check("the kit holds no word of the kitchen of its makers (the makers' own vocabulary): grep is 0", not bad, bad[:5])
 
 
 def t_mutations4(t):
@@ -13509,6 +13509,35 @@ def t_o6_multiedit_same_as_edit(t):
             v == "deny" and "could not be worked out" in _n5d_reason(o), (v, _n5d_reason(o)[:300]))
 
 
+WORKSHOP_ENV = "SHEDKEEPER_WORKSHOP_WORDS"
+_WORKSHOP_MISSING = ("the list of the makers' own words is kept outside the kit (a list in the kit would name what it guards); "
+                     "name its file in the environment variable " + WORKSHOP_ENV)
+
+
+def _workshop_words(scope):
+    """The makers' own working words (the names they use among themselves, their session ids, the paths of their disks) must
+    not be in a file of the kit -- and a list of them in the tests would publish them. So the list lives outside the kit, in a
+    file named by the environment variable SHEDKEEPER_WORKSHOP_WORDS: one entry per line, `scope<TAB>label<TAB>regular
+    expression`, scope `all` (every file of the kit, the tests too) or `kit` (the files outside the tests); `#` starts a comment.
+    Returns [(label, compiled)] for the scope, or None when no list is given: the check is then NOT MEASURED, never green.
+    A list that is named but cannot be read, or holds a broken line, raises (the test is CRASH, loud)."""
+    path = os.environ.get(WORKSHOP_ENV, "")
+    if not path:
+        return None
+    out = []
+    for n, ln in enumerate(open(path, encoding="utf-8").read().splitlines(), 1):
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        parts = ln.split("\t")
+        if len(parts) != 3 or parts[0] not in ("all", "kit") or not parts[2]:
+            raise ValueError("%s, line %d: expected `scope<TAB>label<TAB>regular expression`" % (path, n))
+        if parts[0] == scope:
+            out.append((parts[1], re.compile(parts[2])))
+    if not out:
+        raise ValueError("%s: no entry for the scope %r" % (path, scope))
+    return out
+
+
 def _o6_files():
     """The files of the kit that are read by people and by the agent: everything but the tests, the caches and git."""
     out = []
@@ -13581,17 +13610,21 @@ def t_o6_docs(t):
     # Old assertion (order 8, class b): the README tells the name rule of an MCP tool ("names an object of a database"). The rule is in ARCHITECTURE.md (section 12, not shipped).
     t.check("o6 README: the name rule of an MCP tool is NOT told in the README (databases are not in this release)", "names an object of a database" not in readme, "")
     # the files of the kit: no word of the workshop, no non-ASCII letter
-    words = ["REMOVED", "REMOVED", "REMOVED", chr(0x43b) + chr(0x438) + chr(0x43d) + chr(0x437), "REMOVED", "REMOVED", "REMOVED", "REMOVED"]
-    kitchen = re.compile(r"(?i)\b(?:" + "|".join(words) + r")\b|W:[/\\]|C:/Us" + "ers")
+    workshop = _workshop_words("kit")
+    kitchen = [re.compile(r"C:/Us" + "ers")] + [rx for _label, rx in (workshop or [])]
     bad, nonascii = [], []
     for p in _o6_files():
         txt = read(p)
         for n, ln in enumerate(txt.splitlines(), 1):
-            if kitchen.search(ln):
+            if any(rx.search(ln) for rx in kitchen):
                 bad.append("%s:%d" % (os.path.relpath(p, KIT), n))
         if re.search(r"[\u0400-\u04FF]", txt):
             nonascii.append(os.path.relpath(p, KIT))
-    t.check("o6: no word of the workshop in the files of the kit (the grep of the kitchen is 0)", not bad, bad[:10])
+    if workshop is None:
+        t.check("o6: no user folder path (C:/Users) in the files of the kit (the makers' own words: NOT MEASURED below)", not bad, bad[:10])
+        t._add("NOT MEASURED", "o6: no word of the workshop in the files of the kit (the grep of the kitchen is 0)", _WORKSHOP_MISSING)
+    else:
+        t.check("o6: no word of the workshop in the files of the kit (the grep of the kitchen is 0)", not bad, bad[:10])
     t.check("o6: no Cyrillic letter in the files of the kit (outside the tests)", not nonascii, nonascii)
 
 
